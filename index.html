@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Мой плеер</title>
 <style>
@@ -400,7 +401,7 @@ async function uploadBlob(path, blob, overwrite) {
   if (r.status === 409) return false;              // такой файл на Диске уже лежит
   const { href } = await r.json();
   let put;
-  try { put = await fetch(href, { method: 'PUT', body: blob }); }
+  try { put = await fetch(href, { method: 'PUT', body: blob, referrerPolicy: 'strict-origin-when-cross-origin' }); }
   catch { throw new Error('Не удалось отправить файл на Яндекс.Диск: ' + name); }
   if (!put.ok) throw Object.assign(new Error('Яндекс.Диск не принял файл (' + put.status + '): ' + name), { status: put.status });
   return true;
@@ -790,11 +791,11 @@ function render() {
     const li = el('li', { className: t.id === currentId ? 'current' : '' });
     li.dataset.id = t.id;
     const dur = el('span', { className: 'dur' });
-    if (!t.local) dur.append(el('span', { className: 'st', textContent: '☁', title: 'Лежит на Яндекс.Диске, на это устройство не скачан' }));
+    if (!t.local) dur.append(el('span', { className: 'st', textContent: '☁', title: 'Играет с Яндекс.Диска, на это устройство не скачан' }));
     else if (settings.token && !t.uploaded) dur.append(el('span', { className: 'st', textContent: '↑', title: 'Ждёт отправки на Яндекс.Диск' }));
     dur.append(t.duration ? fmt(t.duration) : '');
     const acts = el('div', { className: 'acts-row' });
-    if (!t.local) acts.append(el('button', { className: 'rb dl', textContent: '⬇', title: 'Скачать на это устройство' }));
+    if (!t.local) acts.append(el('button', { className: 'rb dl', textContent: '⬇', title: 'Скачать на это устройство, чтобы слушать без интернета' }));
     acts.append(el('button', { className: 'rb add', textContent: '＋', title: 'Добавить в плейлист' }),
       el('button', { className: 'rb del', textContent: '✕', title: pl ? 'Убрать из плейлиста' : 'Удалить из плеера' }));
     li.append(el('span', { className: 'num', textContent: i + 1 }),
@@ -832,16 +833,13 @@ async function load(id, autoplay = true) {
     src = URL.createObjectURL(blob); isBlob = true;
   } else {
     if (!settings.token) { flash('Этот трек лежит на Яндекс.Диске — подключите Диск, чтобы его слушать'); return; }
-    setStatus(`Загружаю с Яндекс.Диска: ${t.title}…`);   // заодно трек сохраняется на устройстве
-    try { src = URL.createObjectURL(await pullTrack(t)); isBlob = true; }
+    try { src = await downloadHref(t.name); }      // играем прямо с Диска, на устройство ничего не сохраняется
     catch (e) { flash(errText(e), 8000); return; }
-    setStatus('');
-    render();
   }
   if (seq !== loadSeq) { if (isBlob) URL.revokeObjectURL(src); return; }
   if (objectUrl) URL.revokeObjectURL(objectUrl);
   objectUrl = isBlob ? src : null;
-  currentId = id;
+  currentId = id; lastTime = 0; streamRetried = null;
   audio.src = src;
   settings.last = id; saveSettings();
   $('#nowT').textContent = t.title;
@@ -902,6 +900,7 @@ audio.addEventListener('ended', () => {
 audio.addEventListener('play', () => $('#playPath').setAttribute('d', ICON.pause));
 audio.addEventListener('pause', () => $('#playPath').setAttribute('d', ICON.play));
 audio.addEventListener('timeupdate', () => {
+  if (audio.currentTime) lastTime = audio.currentTime;
   if (seeking) return;
   $('#cur').textContent = fmt(audio.currentTime);
   if (audio.duration) $('#seek').value = audio.currentTime / audio.duration * 1000;
@@ -916,7 +915,24 @@ audio.addEventListener('durationchange', () => {
     if (cell) cell.append(fmt(t.duration));
   }
 });
-audio.addEventListener('error', () => { if (audio.getAttribute('src')) flash('Этот трек не удалось воспроизвести'); });
+let lastTime = 0, streamRetried = null;
+audio.addEventListener('playing', () => { streamRetried = null; });
+audio.addEventListener('error', async () => {
+  if (!audio.getAttribute('src')) return;
+  const t = tracks.find(x => x.id === currentId);
+  if (t && !objectUrl && settings.token && streamRetried !== t.id) {   // ссылка Диска живёт недолго — берём свежую и продолжаем
+    streamRetried = t.id;
+    const at = lastTime, seq = loadSeq;
+    try {
+      const href = await downloadHref(t.name);
+      if (seq !== loadSeq) return;
+      audio.src = href; audio.currentTime = at;
+      await audio.play();
+      return;
+    } catch {}
+  }
+  flash(t && !objectUrl ? 'Не удалось проиграть трек с Яндекс.Диска — проверьте интернет' : 'Этот трек не удалось воспроизвести', 6000);
+});
 
 /* ---------- управление ---------- */
 function applyControls() {
