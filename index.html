@@ -5,6 +5,13 @@
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Мой плеер</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#171a21">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Плеер">
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
@@ -118,7 +125,7 @@
   dialog .err { color: var(--danger); }
   dialog b { color: var(--text); }
 
-  footer { background: var(--panel); border-top: 1px solid var(--line); padding: 10px 18px 14px; flex: none; }
+  footer { background: var(--panel); border-top: 1px solid var(--line); padding: 10px 18px calc(14px + env(safe-area-inset-bottom, 0px)); flex: none; }
   .seek { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .row { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
   .now { flex: 1; min-width: 0; }
@@ -158,6 +165,7 @@
 <header>
   <h1>Мой плеер</h1>
   <input id="search" type="search" placeholder="Поиск">
+  <button class="btn" id="install" hidden title="Поставить плеер как отдельное приложение со своим значком">⤓ Установить приложение</button>
   <button class="btn" id="pull" hidden></button>
   <button class="btn" id="diskBtn"><i class="dot"></i>Яндекс.Диск</button>
   <button class="btn" id="addFolder">Добавить папку с музыкой</button>
@@ -1030,6 +1038,18 @@ if ('mediaSession' in navigator) {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && settings.token && db && !jobs && Date.now() - lastSync > 60000) enqueue(sync);
 });
+
+/* ---------- установка как приложения ---------- */
+let installEvt = null;
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#install').hidden = false; });
+$('#install').onclick = async () => {
+  if (!installEvt) return;
+  installEvt.prompt();
+  try { await installEvt.userChoice; } catch {}
+  installEvt = null; $('#install').hidden = true;
+};
+addEventListener('appinstalled', () => { installEvt = null; $('#install').hidden = true; flash('Плеер установлен как приложение'); });
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 /* ---------- запуск ---------- */
 (async () => {
