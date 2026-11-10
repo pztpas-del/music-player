@@ -320,7 +320,7 @@ async function addFiles(fileList) {
       added++;
       if (added % 10 === 0) render();
     }
-    if (pl && added) await putPl(pl);
+    if (pl && added) await touchPl(pl);
   } catch (e) {
     flash(errText(e), 7000);
     adding = false; render(); return;
@@ -358,6 +358,7 @@ async function filesFromDrop(dt) {
 /* ---------- Яндекс.Диск ---------- */
 const API = 'https://cloud-api.yandex.net/v1/disk';
 const FOLDER_NAME = 'Музыка плеер', FOLDER = 'disk:/' + FOLDER_NAME;
+const DATA = FOLDER + '/_плеер';               // служебная папка: плейлисты и обложки
 const TOKEN_URL = 'https://yandex.ru/dev/disk/poligon/';
 
 function errText(e) {
@@ -393,17 +394,21 @@ async function listRemote() {
 async function downloadHref(name) {
   return (await (await api('GET', '/resources/download', { path: FOLDER + '/' + name })).json()).href;
 }
+async function uploadBlob(path, blob, overwrite) {
+  const name = path.split('/').pop();
+  const r = await api('GET', '/resources/upload', { path, overwrite: String(overwrite) }, [409]);
+  if (r.status === 409) return false;              // такой файл на Диске уже лежит
+  const { href } = await r.json();
+  let put;
+  try { put = await fetch(href, { method: 'PUT', body: blob }); }
+  catch { throw new Error('Не удалось отправить файл на Яндекс.Диск: ' + name); }
+  if (!put.ok) throw Object.assign(new Error('Яндекс.Диск не принял файл (' + put.status + '): ' + name), { status: put.status });
+  return true;
+}
 async function uploadTrack(t) {
   const blob = await getBlob(t.id);
   if (!blob) return;
-  const r = await api('GET', '/resources/upload', { path: FOLDER + '/' + t.name, overwrite: 'false' }, [409]);
-  if (r.status !== 409) {                          // 409 — такой файл на Диске уже лежит
-    const { href } = await r.json();
-    let put;
-    try { put = await fetch(href, { method: 'PUT', body: blob }); }
-    catch { throw new Error('Не удалось отправить файл на Яндекс.Диск: ' + t.name); }
-    if (!put.ok) throw Object.assign(new Error('Яндекс.Диск не принял файл (' + put.status + '): ' + t.name), { status: put.status });
-  }
+  await uploadBlob(FOLDER + '/' + t.name, blob, false);
   t.cloud = t.uploaded = true;
   await putMeta(t);
 }
@@ -446,8 +451,90 @@ async function sync() {
   render();
   setStatus('');
   if (fresh) flash(`С Яндекс.Диска появилось новых треков: ${fresh}`);
+  lastSync = Date.now();
+  let plError;
+  try { await syncPlaylists(); } catch (e) { plError = e; }
   await uploadPending();
+  if (plError) throw plError;
 }
+
+/* плейлисты на Диске: один файл playlists.json и обложки рядом.
+   У каждого плейлиста своя метка времени — при расхождении побеждает более свежая правка. */
+const coverPath = p => `${DATA}/cover-${p.uid}.jpg`;
+async function readRemotePlaylists() {
+  const r = await api('GET', '/resources/download', { path: DATA + '/playlists.json' }, [404]);
+  if (r.status === 404) return null;
+  const { href } = await r.json();
+  try {
+    const f = await fetch(href);
+    if (!f.ok) throw new Error(f.status);
+    return await f.json();
+  } catch { throw new Error('Не удалось прочитать плейлисты с Яндекс.Диска'); }
+}
+async function fetchCover(p) {
+  const r = await api('GET', '/resources/download', { path: coverPath(p) }, [404]);
+  if (r.status === 404) return;
+  const { href } = await r.json();
+  try {
+    const f = await fetch(href);
+    if (!f.ok) throw new Error(f.status);
+    p.cover = await f.blob();
+    await putPl(p);
+  } catch { coverUrls.set(p.id, href); }          // сохранить не вышло — хотя бы покажем с Диска
+}
+async function syncPlaylists() {
+  if (!settings.token) return;
+  await api('PUT', '/resources', { path: DATA }, [409]);
+  const remote = await readRemotePlaylists() || {};
+  const deleted = { ...(remote.deleted || {}) };
+  let push = false, got = 0;
+  for (const [u, ts] of Object.entries(settings.plDeleted || {})) {
+    if (!(deleted[u] >= ts)) { deleted[u] = ts; push = true; }
+  }
+  const byUid = new Map(playlists.map(p => [p.uid, p])), remoteUids = new Set();
+  for (const r of remote.playlists || []) {
+    if (deleted[r.uid] >= r.updated) { push = true; continue; }
+    remoteUids.add(r.uid);
+    let l = byUid.get(r.uid);
+    if (!l) {
+      l = { uid: r.uid, name: r.name, tracks: r.tracks || [], cover: null, coverVer: r.coverVer || 0, coverPush: false,
+        created: r.created || r.updated, updated: r.updated };
+      l.id = await putPl(l);
+      playlists.push(l); got++;
+    } else if (r.updated > l.updated) {
+      l.name = r.name; l.tracks = r.tracks || []; l.updated = r.updated;
+      if ((r.coverVer || 0) !== l.coverVer) { l.cover = null; l.coverVer = r.coverVer || 0; l.coverPush = false; dropCoverUrl(l); }
+      await putPl(l);
+    } else if (l.updated > r.updated) push = true;
+  }
+  for (const l of playlists.slice()) {
+    if (deleted[l.uid] >= l.updated) {             // плейлист удалили на другом устройстве
+      await req(db.transaction('playlists', 'readwrite').objectStore('playlists').delete(l.id));
+      playlists = playlists.filter(x => x !== l);
+      dropCoverUrl(l);
+    } else if (!remoteUids.has(l.uid)) push = true;
+  }
+  settings.plDeleted = deleted; saveSettings();
+  for (const l of playlists) {
+    if (l.cover && l.coverPush) { await uploadBlob(coverPath(l), l.cover, true); l.coverPush = false; await putPl(l); }
+    else if (!l.cover && l.coverVer && !coverUrls.has(l.id)) await fetchCover(l);
+  }
+  if (push) {
+    const body = { version: 1, deleted, playlists: playlists.map(({ uid, name, tracks, coverVer, created, updated }) =>
+      ({ uid, name, tracks, coverVer, created, updated })) };
+    await uploadBlob(DATA + '/playlists.json', new Blob([JSON.stringify(body)], { type: 'application/json' }), true);
+  }
+  playlists.sort((a, b) => a.created - b.created);
+  render();
+  if (got) flash(`С Яндекс.Диска получено плейлистов: ${got}`);
+}
+let plTimer, lastSync = 0;
+function schedulePlSync() {
+  if (!settings.token) return;
+  clearTimeout(plTimer);
+  plTimer = setTimeout(() => enqueue(syncPlaylists), 1500);
+}
+async function touchPl(p) { p.updated = Math.max(Date.now(), (p.updated || 0) + 1); await putPl(p); schedulePlSync(); }
 async function pullTrack(t) {                      // 'ok' — сохранён в плеере, 'file' — отдан браузеру как файл
   const href = await downloadHref(t.name);
   let blob;
@@ -518,8 +605,8 @@ function renderDisk(error) {
     };
     d.append(
       el('h2', { textContent: 'Подключить Яндекс.Диск' }),
-      el('p', {}, 'Всё, что вы добавляете в плеер, будет копироваться в папку ', el('b', { textContent: '«' + FOLDER_NAME + '»' }),
-        ' на вашем Диске. На другом устройстве подключите тот же Диск — и музыка появится в плеере.'),
+      el('p', {}, 'Треки и плейлисты, которые вы добавляете в плеер, будут сохраняться в папку ', el('b', { textContent: '«' + FOLDER_NAME + '»' }),
+        ' на вашем Диске. На другом устройстве подключите тот же Диск — и вся музыка с плейлистами появится в плеере.'),
       el('ol', {},
         el('li', {}, 'Откройте ', el('a', { href: TOKEN_URL, target: '_blank', rel: 'noopener', textContent: 'Полигон Яндекс.Диска' }),
           ' и войдите в свой аккаунт.'),
@@ -538,7 +625,7 @@ function renderDisk(error) {
     d.append(
       el('h2', { textContent: 'Яндекс.Диск подключён' }),
       el('p', {}, 'Аккаунт: ', el('b', { textContent: settings.login || '—' }), '. Папка: ', el('b', { textContent: '«' + FOLDER_NAME + '»' }), '.'),
-      el('p', { textContent: `Треков на Диске: ${onDisk}. Из них не скачано на это устройство: ${cloudOnly}.` }),
+      el('p', { textContent: `Треков на Диске: ${onDisk}. Из них не скачано на это устройство: ${cloudOnly}. Плейлистов: ${playlists.length}.` }),
       usage,
       el('div', { className: 'acts' },
         el('button', { className: 'btn primary', textContent: 'Синхронизировать', onclick: () => { d.close(); enqueue(sync); } }),
@@ -553,14 +640,19 @@ const pullAll = () => enqueue(() => pullMany(tracks.filter(t => !t.local && t.cl
 
 /* ---------- плейлисты ---------- */
 function coverUrl(p) {
-  if (!p.cover) return null;
-  if (!coverUrls.has(p.id)) coverUrls.set(p.id, URL.createObjectURL(p.cover));
-  return coverUrls.get(p.id);
+  if (!coverUrls.has(p.id) && p.cover) coverUrls.set(p.id, URL.createObjectURL(p.cover));
+  return coverUrls.get(p.id) || null;
 }
 function coverEl(p, glyph = '♪') {
   const u = p && coverUrl(p);
   return u ? el('img', { className: 'cover', src: u, alt: '' }) : el('div', { className: 'cover', textContent: glyph });
 }
+function dropCoverUrl(p) {
+  const u = coverUrls.get(p.id);
+  if (u && u.startsWith('blob:')) URL.revokeObjectURL(u);
+  coverUrls.delete(p.id);
+}
+const newUid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 async function shrinkImage(file) {
   try {
     const bmp = await createImageBitmap(file), side = Math.min(bmp.width, bmp.height), size = Math.min(500, side);
@@ -572,9 +664,11 @@ async function shrinkImage(file) {
 async function createPlaylist(firstTrackName) {
   const name = (prompt('Название плейлиста') || '').trim();
   if (!name) return null;
-  const p = { name, tracks: firstTrackName ? [firstTrackName] : [], cover: null, created: Date.now() };
+  const p = { uid: newUid(), name, tracks: firstTrackName ? [firstTrackName] : [], cover: null, coverVer: 0, coverPush: false,
+    created: Date.now(), updated: Date.now() };
   p.id = await putPl(p);
   playlists.push(p);
+  schedulePlSync();
   return p;
 }
 function openPlaylist(id) { activePl = id; $('#search').value = ''; render(); $('main').scrollTop = 0; }
@@ -604,13 +698,16 @@ function renderPlaylists() {
       el('button', { className: 'btn small', textContent: p.cover ? 'Сменить обложку' : 'Добавить обложку', onclick: pickCover }),
       el('button', { className: 'btn small', textContent: 'Переименовать', onclick: async () => {
         const name = (prompt('Название плейлиста', p.name) || '').trim();
-        if (name) { p.name = name; await putPl(p); render(); }
+        if (name) { p.name = name; await touchPl(p); render(); }
       } }),
       el('button', { className: 'btn small danger', textContent: 'Удалить плейлист', onclick: async () => {
         if (!confirm(`Удалить плейлист «${p.name}»? Сами треки останутся в плеере.`)) return;
         await req(db.transaction('playlists', 'readwrite').objectStore('playlists').delete(p.id));
         playlists = playlists.filter(x => x !== p);
-        if (coverUrls.has(p.id)) { URL.revokeObjectURL(coverUrls.get(p.id)); coverUrls.delete(p.id); }
+        dropCoverUrl(p);
+        settings.plDeleted = { ...(settings.plDeleted || {}), [p.uid]: Math.max(Date.now(), (p.updated || 0) + 1) }; saveSettings();
+        if (settings.token && p.coverVer) api('DELETE', '/resources', { path: coverPath(p) }, [404]).catch(() => {});
+        schedulePlSync();
         openPlaylist(null);
       } })));
 }
@@ -619,8 +716,9 @@ $('#coverInput').onchange = async e => {
   e.target.value = '';
   if (!file || !p) return;
   p.cover = await shrinkImage(file);
-  await putPl(p);
-  if (coverUrls.has(p.id)) { URL.revokeObjectURL(coverUrls.get(p.id)); coverUrls.delete(p.id); }
+  p.coverVer = Date.now(); p.coverPush = true;
+  dropCoverUrl(p);
+  await touchPl(p);
   render();
 };
 
@@ -634,7 +732,7 @@ function openPlMenu(track, anchor) {
     const inPl = p.tracks.includes(track.name);
     m.append(el('button', { textContent: (inPl ? '✓ ' : '　') + p.name, onclick: async () => {
       if (inPl) p.tracks = p.tracks.filter(n => n !== track.name); else p.tracks.push(track.name);
-      await putPl(p);
+      await touchPl(p);
       closeMenu(); render();
       flash(inPl ? `Убрано из «${p.name}»` : `Добавлено в «${p.name}»`, 2000);
     } }));
@@ -835,7 +933,7 @@ $('#list').onclick = async e => {
     const pl = playlists.find(p => p.id === activePl);
     if (pl) {                                      // внутри плейлиста крестик только убирает из него
       pl.tracks = pl.tracks.filter(n => n !== t.name);
-      await putPl(pl);
+      await touchPl(pl);
       return render();
     }
     if (t.cloud && settings.token) {
@@ -845,7 +943,7 @@ $('#list').onclick = async e => {
     }
     await removeTrack(id);
     for (const p of playlists) {
-      if (p.tracks.includes(t.name)) { p.tracks = p.tracks.filter(n => n !== t.name); await putPl(p); }
+      if (p.tracks.includes(t.name)) { p.tracks = p.tracks.filter(n => n !== t.name); await touchPl(p); }
     }
     return render();
   }
@@ -884,6 +982,11 @@ if ('mediaSession' in navigator) {
   ms.setActionHandler('previoustrack', prev);
 }
 
+/* вернулись в плеер — подтягиваем то, что изменилось на других устройствах */
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && settings.token && db && !jobs && Date.now() - lastSync > 60000) enqueue(sync);
+});
+
 /* ---------- запуск ---------- */
 (async () => {
   applyControls();
@@ -898,6 +1001,13 @@ if ('mediaSession' in navigator) {
   for (const t of tracks) {                        // записи из первой версии плеера
     if (t.local === undefined) { t.local = true; t.cloud = false; t.uploaded = false; }
   }
+  for (const p of playlists) {                     // плейлисты, созданные до синхронизации
+    if (!p.uid) {
+      Object.assign(p, { uid: newUid(), updated: p.created || Date.now(), coverVer: p.cover ? Date.now() : 0, coverPush: !!p.cover });
+      await putPl(p);
+    }
+  }
+  playlists.sort((a, b) => a.created - b.created);
   render();
   const last = tracks.find(t => t.id === settings.last);
   if (last && last.local) load(last.id, false);
