@@ -580,16 +580,29 @@ function updateDiskBtn() {
   $('#pull').title = 'Сохранить на это устройство треки, которые пока лежат только на Яндекс.Диске';
 }
 
+/* из вставленного текста достаём сам токен: люди копируют его с пробелами, кавычками, словом OAuth или целой ссылкой */
+function cleanToken(raw) {
+  let t = String(raw || '').trim();
+  const m = t.match(/access_token=([^&\s#]+)/);
+  if (m) t = decodeURIComponent(m[1]);
+  return t.replace(/^(OAuth|Bearer)\s+/i, '').replace(/[\s"'«»“”`]/g, '');
+}
 function renderDisk(error) {
   const d = $('#diskDlg');
   d.textContent = '';
   const close = el('button', { className: 'btn', textContent: 'Закрыть', onclick: () => d.close() });
   if (!settings.token) {
-    const input = el('input', { className: 'field', type: 'password', placeholder: 'Вставьте токен сюда', autocomplete: 'off' });
+    const input = el('input', { className: 'field', type: 'text', placeholder: 'Вставьте токен сюда', autocomplete: 'off',
+      autocapitalize: 'off', spellcheck: false, name: 'disk-token-' + Date.now() });
+    input.setAttribute('autocorrect', 'off');
     const go = el('button', { className: 'btn primary', textContent: 'Подключить' });
     go.onclick = async () => {
-      const token = input.value.trim();
+      const token = cleanToken(input.value);
       if (!token) return;
+      input.value = token;
+      if (token.length < 20 || /[^\w.-]/.test(token)) {
+        return renderDisk('Это не похоже на токен. Токен — длинная строка из латинских букв и цифр без пробелов, обычно начинается с «y0_». Пароль от Яндекса и адрес почты сюда не подходят.');
+      }
       go.disabled = true; go.textContent = 'Проверяю…';
       settings.token = token;
       try {
@@ -600,7 +613,9 @@ function renderDisk(error) {
         enqueue(sync).then(() => { if (d.open && settings.token) renderDisk(); });
       } catch (e) {
         settings.token = '';
-        renderDisk(e.status === 401 ? 'Токен не подошёл. Проверьте, что скопировали его целиком.' : errText(e));
+        renderDisk(e.status === 401
+          ? `Яндекс.Диск не принял этот токен (в нём ${token.length} симв., начало «${token.slice(0, 3)}…»). Скорее всего, он скопирован не целиком или устарел. Надёжнее всего — на устройстве, где Диск уже подключён, нажать «Яндекс.Диск» → «Скопировать токен» и вставить его сюда.`
+          : errText(e));
       }
     };
     d.append(
@@ -612,6 +627,8 @@ function renderDisk(error) {
           ' и войдите в свой аккаунт.'),
         el('li', { textContent: 'Нажмите «Получить OAuth-токен» и скопируйте его.' }),
         el('li', { textContent: 'Вставьте токен ниже. Он хранится только в этом браузере.' })),
+      el('p', {}, el('b', { textContent: 'Диск уже подключён на другом устройстве? ' }),
+        'Тогда новый токен получать не нужно: откройте там «Яндекс.Диск» → «Скопировать токен», перешлите его себе и вставьте сюда.'),
       input);
     if (error) d.append(el('p', { className: 'err', textContent: error }));
     d.append(el('div', { className: 'acts' }, go, close));
@@ -630,6 +647,11 @@ function renderDisk(error) {
       el('div', { className: 'acts' },
         el('button', { className: 'btn primary', textContent: 'Синхронизировать', onclick: () => { d.close(); enqueue(sync); } }),
         el('button', { className: 'btn', textContent: 'Скачать всё на устройство', disabled: !cloudOnly, onclick: () => { d.close(); pullAll(); } }),
+        el('button', { className: 'btn', textContent: 'Скопировать токен', title: 'Чтобы подключить этот же Диск на другом устройстве',
+          onclick: async e => {
+            try { await navigator.clipboard.writeText(settings.token); e.target.textContent = 'Скопировано ✓'; }
+            catch { prompt('Скопируйте токен и вставьте его в плеер на другом устройстве', settings.token); }
+          } }),
         el('button', { className: 'btn danger', textContent: 'Отключить', onclick: () => {
           settings.token = ''; settings.login = ''; saveSettings(); updateDiskBtn(); render(); renderDisk();
         } }),
