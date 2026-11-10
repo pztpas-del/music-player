@@ -266,7 +266,7 @@ async function removeTrack(id) {
 
 /* ---------- добавление ---------- */
 function parseName(name) {
-  const base = name.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim();
+  const base = name.replace(/\.[^.]+$/, '').replace(/^\[[^\]]*\]\s*/, '').replace(/_/g, ' ').trim();   // «[сайт]» в начале не нужен
   const m = base.match(/^(.+?)\s+[-–—]\s+(.+)$/);
   return m ? { artist: m[1].trim(), title: m[2].trim() } : { artist: '', title: base };
 }
@@ -465,22 +465,17 @@ async function readRemotePlaylists() {
   const r = await api('GET', '/resources/download', { path: DATA + '/playlists.json' }, [404]);
   if (r.status === 404) return null;
   const { href } = await r.json();
-  try {
-    const f = await fetch(href);
-    if (!f.ok) throw new Error(f.status);
-    return await f.json();
-  } catch { throw new Error('Не удалось прочитать плейлисты с Яндекс.Диска'); }
+  try { return await (await diskGet(href)).json(); }
+  catch (e) { throw new Error('Не удалось прочитать плейлисты с Яндекс.Диска. ' + (e.message || '')); }
 }
 async function fetchCover(p) {
   const r = await api('GET', '/resources/download', { path: coverPath(p) }, [404]);
   if (r.status === 404) return;
   const { href } = await r.json();
   try {
-    const f = await fetch(href);
-    if (!f.ok) throw new Error(f.status);
-    p.cover = await f.blob();
+    p.cover = await (await diskGet(href)).blob();
     await putPl(p);
-  } catch { coverUrls.set(p.id, href); }          // сохранить не вышло — хотя бы покажем с Диска
+  } catch {}                                      // обложка подтянется при следующей сверке
 }
 async function syncPlaylists() {
   if (!settings.token) return;
@@ -535,33 +530,40 @@ function schedulePlSync() {
   plTimer = setTimeout(() => enqueue(syncPlaylists), 1500);
 }
 async function touchPl(p) { p.updated = Math.max(Date.now(), (p.updated || 0) + 1); await putPl(p); schedulePlSync(); }
-async function pullTrack(t) {                      // 'ok' — сохранён в плеере, 'file' — отдан браузеру как файл
-  const href = await downloadHref(t.name);
-  let blob;
-  try {
-    const r = await fetch(href);
-    if (!r.ok) throw new Error(r.status);
-    blob = await r.blob();
-  } catch {
-    el('a', { href, download: t.name, rel: 'noopener' }).click();
-    return 'file';
+/* Файл с серверов скачивания Диска. Они ждут тот же токен, что и сам Диск;
+   запрос без токена оставлен запасным на случай, если ссылка уже подписана. */
+async function diskGet(href) {
+  const notes = [];
+  for (const headers of [{ Authorization: 'OAuth ' + settings.token }, null]) {
+    try {
+      const r = await fetch(href, headers ? { headers } : {});
+      if (r.ok) return r;
+      notes.push('код ' + r.status);
+    } catch { notes.push('нет ответа'); }
   }
-  await attachBlob(t, blob);
-  return 'ok';
+  throw new Error(`Яндекс.Диск не отдал файл (с токеном: ${notes[0]}; без токена: ${notes[1]})`);
+}
+const MIME = { mp3: 'audio/mpeg', m4a: 'audio/mp4', m4b: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', oga: 'audio/ogg',
+  opus: 'audio/ogg', wav: 'audio/wav', flac: 'audio/flac', webm: 'audio/webm', weba: 'audio/webm' };
+async function pullTrack(t) {                      // скачивает трек с Диска и сохраняет его в плеере
+  const href = await downloadHref(t.name);
+  let blob = await (await diskGet(href)).blob();
+  const mime = MIME[t.name.split('.').pop().toLowerCase()];
+  if (mime && !blob.type.startsWith('audio/')) blob = new Blob([blob], { type: mime });
+  if (tracks.includes(t)) await attachBlob(t, blob);
+  return blob;
 }
 async function pullMany(list) {
-  let ok = 0, asFile = 0;
+  let ok = 0;
   try {
     for (let i = 0; i < list.length; i++) {
       if (!settings.token) break;
+      if (list[i].local) continue;
       setStatus(`Скачиваю с Яндекс.Диска ${i + 1} из ${list.length}: ${list[i].name}`);
-      if (await pullTrack(list[i]) === 'ok') ok++;
-      else { asFile++; await new Promise(r => setTimeout(r, 700)); }
+      await pullTrack(list[i]);
+      ok++;
     }
-  } finally { render(); }
-  flash(asFile
-    ? `Браузер сохранил файлы в «Загрузки» (${asFile}). Добавьте их в плеер кнопкой «Добавить треки», чтобы слушать без интернета`
-    : `Скачано на это устройство: ${ok}`, asFile ? 9000 : 4000);
+  } finally { render(); if (ok) flash(`Скачано на это устройство: ${ok}`); }
 }
 
 /* очередь: операции с Диском идут строго по одной */
@@ -830,7 +832,11 @@ async function load(id, autoplay = true) {
     src = URL.createObjectURL(blob); isBlob = true;
   } else {
     if (!settings.token) { flash('Этот трек лежит на Яндекс.Диске — подключите Диск, чтобы его слушать'); return; }
-    try { src = await downloadHref(t.name); } catch (e) { flash(errText(e)); return; }
+    setStatus(`Загружаю с Яндекс.Диска: ${t.title}…`);   // заодно трек сохраняется на устройстве
+    try { src = URL.createObjectURL(await pullTrack(t)); isBlob = true; }
+    catch (e) { flash(errText(e), 8000); return; }
+    setStatus('');
+    render();
   }
   if (seq !== loadSeq) { if (isBlob) URL.revokeObjectURL(src); return; }
   if (objectUrl) URL.revokeObjectURL(objectUrl);
