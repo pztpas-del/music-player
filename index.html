@@ -1,0 +1,908 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Мой плеер</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --text: #e8eaf0; --muted: #8b92a3; --accent: #4f8cff; --accent2: #3a6fd6; --danger: #e05a5a; --ok: #46c281;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.4 "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; }
+  [hidden] { display: none !important; }
+  header {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 19px; margin: 0; font-weight: 650; margin-right: auto; }
+  #search, .field {
+    padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); font: inherit; outline: none;
+  }
+  #search { flex: 1 1 160px; max-width: 280px; }
+  #search:focus, .field:focus { border-color: var(--accent); }
+  .btn { padding: 8px 14px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--line); white-space: nowrap; }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn.primary:hover { background: var(--accent2); }
+  .btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+  .btn.small { padding: 5px 10px; font-size: 13px; }
+  #diskBtn .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 7px; }
+  #diskBtn.on .dot { background: var(--ok); }
+  #diskBtn.busy .dot { background: var(--accent); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  /* плейлисты */
+  #pls { display: flex; gap: 12px; overflow-x: auto; padding: 14px 18px 10px; border-bottom: 1px solid var(--line); flex: none; }
+  .pl { flex: 0 0 92px; width: 92px; text-align: center; padding: 0; }
+  .cover {
+    width: 92px; height: 92px; border-radius: 12px; object-fit: cover; display: grid; place-items: center;
+    background: linear-gradient(135deg, #2b3550, #1c2030); border: 2px solid transparent; font-size: 30px; color: var(--muted);
+  }
+  .pl:hover .cover { border-color: var(--line); }
+  .pl.active .cover { border-color: var(--accent); }
+  .pl.new .cover { background: none; border: 2px dashed var(--line); }
+  .pl span { display: block; margin-top: 6px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pl.active span { color: var(--accent); font-weight: 600; }
+
+  #plHead { display: flex; gap: 14px; align-items: center; padding: 14px 18px 6px; flex-wrap: wrap; }
+  #plHead .cover { width: 64px; height: 64px; font-size: 22px; cursor: pointer; flex: none; }
+  #plHead .info { flex: 1; min-width: 120px; }
+  #plHead .info b { font-size: 18px; display: block; }
+  #plHead .info small, #count { color: var(--muted); font-size: 13px; }
+  #plHead .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  #count { padding: 10px 18px 0; }
+
+  main { flex: 1; overflow-y: auto; position: relative; }
+  #list { list-style: none; margin: 0; padding: 6px 8px 20px; }
+  #list li {
+    display: grid; grid-template-columns: 30px 1fr auto auto; gap: 10px; align-items: center;
+    padding: 7px 10px; border-radius: 8px; cursor: pointer; user-select: none;
+  }
+  #list li:hover { background: var(--panel); }
+  #list li.current { background: var(--panel2); }
+  #list li.current .t { color: var(--accent); }
+  #list li.note { display: block; color: var(--muted); cursor: default; padding: 16px 10px; }
+  #list li.note:hover { background: none; }
+  .num { color: var(--muted); font-size: 13px; text-align: center; font-variant-numeric: tabular-nums; }
+  .meta { min-width: 0; }
+  .t, .a { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .a { color: var(--muted); font-size: 13px; }
+  .dur { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dur .st { margin-right: 6px; }
+  .acts-row { display: flex; gap: 2px; }
+  .rb { color: var(--muted); width: 30px; height: 30px; border-radius: 6px; font-size: 16px; }
+  .rb:hover { color: var(--text); background: var(--line); }
+  .rb.del:hover { color: var(--danger); }
+  .rb.dl { color: var(--accent); }
+
+  #empty {
+    margin: 18px; min-height: 220px; display: flex; flex-direction: column; gap: 10px;
+    align-items: center; justify-content: center; text-align: center;
+    border: 2px dashed var(--line); border-radius: 16px; color: var(--muted); padding: 20px;
+  }
+  #empty b { color: var(--text); font-size: 18px; }
+  body.drag main::after {
+    content: "Отпустите, чтобы добавить"; position: absolute; inset: 10px; z-index: 5;
+    display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 600;
+    background: rgba(79,140,255,.15); border: 2px dashed var(--accent); border-radius: 16px;
+  }
+  #status { padding: 0 18px; color: var(--muted); font-size: 13px; height: 0; overflow: hidden; transition: height .15s; white-space: nowrap; text-overflow: ellipsis; flex: none; }
+  #status.on { height: 26px; line-height: 26px; }
+
+  #menu {
+    position: fixed; z-index: 20; min-width: 200px; max-width: 280px; max-height: 60vh; overflow-y: auto;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  }
+  #menu .h { color: var(--muted); font-size: 12px; padding: 4px 10px 6px; }
+  #menu button { display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #menu button:hover { background: var(--line); }
+
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 22px; width: min(460px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog h2 { margin: 0 0 10px; font-size: 18px; }
+  dialog p, dialog ol { color: var(--muted); margin: 8px 0; }
+  dialog ol { padding-left: 20px; }
+  dialog a { color: var(--accent); }
+  dialog .field { width: 100%; margin: 8px 0; }
+  dialog .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  dialog .err { color: var(--danger); }
+  dialog b { color: var(--text); }
+
+  footer { background: var(--panel); border-top: 1px solid var(--line); padding: 10px 18px 14px; flex: none; }
+  .seek { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .row { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+  .now { flex: 1; min-width: 0; }
+  .now .t { font-weight: 600; }
+  .ctrl { display: flex; align-items: center; gap: 4px; }
+  .ic { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); }
+  .ic:hover { color: var(--text); background: var(--panel2); }
+  .ic.on { color: var(--accent); }
+  .ic svg { width: 20px; height: 20px; fill: currentColor; }
+  #play { width: 46px; height: 46px; background: var(--accent); color: #fff; }
+  #play:hover { background: var(--accent2); color: #fff; }
+  #play svg { width: 24px; height: 24px; }
+  .vol { flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+  #repeat { position: relative; }
+  #repeat.one::after { content: "1"; position: absolute; font-size: 9px; font-weight: 700; top: 6px; right: 6px; }
+
+  input[type=range] { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--line); outline: none; cursor: pointer; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: var(--text); }
+  input[type=range]::-moz-range-thumb { width: 13px; height: 13px; border: 0; border-radius: 50%; background: var(--text); }
+  #seek { flex: 1; }
+  #volume { width: 100px; }
+
+  @media (max-width: 640px) {
+    .vol #volume { display: none; }
+    .vol { flex: 0; }
+    header { padding: 10px 12px; gap: 8px; }
+    header h1 { font-size: 17px; }
+    #search { order: 5; max-width: none; flex-basis: 100%; }
+    #pls { padding: 12px 12px 8px; }
+    .pl { flex-basis: 76px; width: 76px; } .pl .cover { width: 76px; height: 76px; }
+    #list li { grid-template-columns: 1fr auto auto; } .num { display: none; }
+    footer { padding: 8px 12px 12px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Мой плеер</h1>
+  <input id="search" type="search" placeholder="Поиск">
+  <button class="btn" id="pull" hidden></button>
+  <button class="btn" id="diskBtn"><i class="dot"></i>Яндекс.Диск</button>
+  <button class="btn" id="addFolder">Папка</button>
+  <button class="btn primary" id="addFiles">+ Добавить треки</button>
+  <input id="fileInput" type="file" accept="audio/*,.mp3,.m4a,.flac,.ogg,.opus,.wav,.aac" multiple hidden>
+  <input id="folderInput" type="file" webkitdirectory multiple hidden>
+  <input id="coverInput" type="file" accept="image/*" hidden>
+</header>
+<nav id="pls"></nav>
+<div id="status"></div>
+<main>
+  <div id="plHead" hidden></div>
+  <div id="count"></div>
+  <ul id="list"></ul>
+  <div id="empty" hidden>
+    <b>Здесь пока нет музыки</b>
+    <span>Перетащите сюда файлы или папку с треками<br>либо нажмите «Добавить треки»</span>
+  </div>
+</main>
+<footer>
+  <div class="seek">
+    <span id="cur">0:00</span>
+    <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Перемотка">
+    <span id="total">0:00</span>
+  </div>
+  <div class="row">
+    <div class="now meta">
+      <div class="t" id="nowT">Ничего не играет</div>
+      <div class="a" id="nowA"></div>
+    </div>
+    <div class="ctrl">
+      <button class="ic" id="shuffle" title="Перемешать (S)"><svg viewBox="0 0 24 24"><path d="M10.6 9.2 5.4 4 4 5.4l5.2 5.2 1.4-1.4zM14.5 4l2 2L4 18.6 5.4 20 18 7.5l2 2V4h-5.5zm.3 9.4-1.4 1.4 3.1 3.1-2 2.1H20v-5.5l-2 2-3.2-3.1z"/></svg></button>
+      <button class="ic" id="prev" title="Предыдущий"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+      <button class="ic" id="play" title="Играть / пауза (пробел)"><svg viewBox="0 0 24 24"><path id="playPath" d="M8 5v14l11-7z"/></svg></button>
+      <button class="ic" id="next" title="Следующий"><svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+      <button class="ic" id="repeat" title="Повтор (R)"><svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg></button>
+    </div>
+    <div class="vol">
+      <button class="ic" id="mute" title="Звук (M)"><svg viewBox="0 0 24 24"><path id="volPath" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4z"/></svg></button>
+      <input id="volume" type="range" min="0" max="100" value="80" aria-label="Громкость">
+    </div>
+  </div>
+</footer>
+<div id="menu" hidden></div>
+<dialog id="diskDlg"></dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const el = (tag, props, ...kids) => { const e = Object.assign(document.createElement(tag), props || {}); e.append(...kids); return e; };
+const AUDIO_EXT = /\.(mp3|m4a|m4b|aac|ogg|oga|opus|wav|flac|webm|weba|wma)$/i;
+const ICON = {
+  play: 'M8 5v14l11-7z', pause: 'M6 5h4v14H6zm8 0h4v14h-4z',
+  vol: 'M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4z',
+  muted: 'M3 9v6h4l5 5V4L7 9H3zm18.3-.9-1.4-1.4L17 9.6l-2.9-2.9-1.4 1.4 2.9 2.9-2.9 2.9 1.4 1.4 2.9-2.9 2.9 2.9 1.4-1.4-2.9-2.9z'
+};
+
+const audio = new Audio();
+let db, tracks = [], playlists = [], view = [], activePl = null;
+let currentId = null, objectUrl = null, played = [], seeking = false, loadSeq = 0;
+const coverUrls = new Map();
+const settings = Object.assign({ volume: 0.8, muted: false, shuffle: false, repeat: 'off', last: null, token: '', login: '' },
+  JSON.parse(localStorage.getItem('player-settings') || '{}'));
+const saveSettings = () => localStorage.setItem('player-settings', JSON.stringify(settings));
+
+/* ---------- хранилище ---------- */
+function openDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('music-player', 2);
+    r.onupgradeneeded = () => {
+      const d = r.result, has = n => d.objectStoreNames.contains(n);
+      if (!has('tracks')) d.createObjectStore('tracks', { keyPath: 'id', autoIncrement: true });
+      if (!has('blobs')) d.createObjectStore('blobs');
+      if (!has('playlists')) d.createObjectStore('playlists', { keyPath: 'id', autoIncrement: true });
+    };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+const req = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+const txDone = t => new Promise((res, rej) => { t.oncomplete = res; t.onerror = t.onabort = () => rej(t.error); });
+const getBlob = id => req(db.transaction('blobs').objectStore('blobs').get(id));
+const putMeta = t => req(db.transaction('tracks', 'readwrite').objectStore('tracks').put(t));
+const putPl = p => req(db.transaction('playlists', 'readwrite').objectStore('playlists').put(p));
+
+async function saveTrack(meta, file) {            // file может быть null — трек только на Диске
+  const t = db.transaction(['tracks', 'blobs'], 'readwrite');
+  const r = t.objectStore('tracks').add(meta);
+  r.onsuccess = () => { meta.id = r.result; if (file) t.objectStore('blobs').put(file, r.result); };
+  await txDone(t);
+  return meta;
+}
+async function attachBlob(track, blob) {
+  track.local = true;
+  const t = db.transaction(['tracks', 'blobs'], 'readwrite');
+  t.objectStore('blobs').put(blob, track.id);
+  t.objectStore('tracks').put(track);
+  await txDone(t);
+}
+async function removeTrack(id) {
+  const t = db.transaction(['tracks', 'blobs'], 'readwrite');
+  t.objectStore('tracks').delete(id);
+  t.objectStore('blobs').delete(id);
+  await txDone(t);
+  tracks = tracks.filter(x => x.id !== id);
+  if (id === currentId) stop();
+}
+
+/* ---------- добавление ---------- */
+function parseName(name) {
+  const base = name.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim();
+  const m = base.match(/^(.+?)\s+[-–—]\s+(.+)$/);
+  return m ? { artist: m[1].trim(), title: m[2].trim() } : { artist: '', title: base };
+}
+function probeDuration(file) {
+  return new Promise(res => {
+    const a = new Audio(), u = URL.createObjectURL(file);
+    const done = v => { clearTimeout(timer); URL.revokeObjectURL(u); a.removeAttribute('src'); res(v); };
+    const timer = setTimeout(() => done(0), 6000);
+    a.preload = 'metadata';
+    a.onloadedmetadata = () => done(isFinite(a.duration) ? a.duration : 0);
+    a.onerror = () => done(-1);
+    a.src = u;
+  });
+}
+function setStatus(text) {
+  const s = $('#status');
+  s.textContent = text || '';
+  s.classList.toggle('on', !!text);
+}
+let flashTimer;
+function flash(text, ms = 4000) {
+  setStatus(text);
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => setStatus(''), ms);
+}
+let adding = false;
+async function addFiles(fileList) {
+  const files = [...fileList].filter(f => f.type.startsWith('audio/') || AUDIO_EXT.test(f.name));
+  if (!files.length) { flash('Среди выбранных файлов нет музыки'); return; }
+  if (adding) { flash('Подождите, пока добавятся предыдущие треки'); return; }
+  adding = true;
+  files.sort((a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true }));
+  const pl = playlists.find(p => p.id === activePl);
+  let added = 0, skipped = 0, bad = 0;
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      setStatus(`Добавляю ${i + 1} из ${files.length}: ${f.name}`);
+      const existing = tracks.find(t => t.name === f.name);
+      if (existing && existing.local) { skipped++; continue; }
+      const duration = await probeDuration(f);
+      if (duration < 0) { bad++; continue; }
+      if (existing) {                              // трек был только на Диске — теперь есть и на устройстве
+        if (duration) existing.duration = duration;
+        await attachBlob(existing, f);
+      } else {
+        tracks.push(await saveTrack({ ...parseName(f.name), name: f.name, size: f.size, duration,
+          added: Date.now(), local: true, cloud: false, uploaded: false }, f));
+      }
+      if (pl && !pl.tracks.includes(f.name)) pl.tracks.push(f.name);
+      added++;
+      if (added % 10 === 0) render();
+    }
+    if (pl && added) await putPl(pl);
+  } catch (e) {
+    flash(errText(e), 7000);
+    adding = false; render(); return;
+  }
+  adding = false;
+  render();
+  const parts = [`Добавлено: ${added}`];
+  if (skipped) parts.push(`уже были: ${skipped}`);
+  if (bad) parts.push(`не открылись: ${bad}`);
+  flash(parts.join(', '));
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+  if (settings.token && added) enqueue(uploadPending);
+}
+
+/* перетаскивание, в том числе папок */
+async function filesFromDrop(dt) {
+  const entries = [...dt.items].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  if (!entries.length) return [...dt.files];
+  const out = [];
+  async function walk(e) {
+    if (e.isFile) out.push(await new Promise((res, rej) => e.file(res, rej)));
+    else if (e.isDirectory) {
+      const reader = e.createReader();
+      for (;;) {
+        const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        if (!batch.length) break;
+        for (const c of batch) await walk(c);
+      }
+    }
+  }
+  for (const e of entries) { try { await walk(e); } catch {} }
+  return out;
+}
+
+/* ---------- Яндекс.Диск ---------- */
+const API = 'https://cloud-api.yandex.net/v1/disk';
+const FOLDER_NAME = 'Музыка плеер', FOLDER = 'disk:/' + FOLDER_NAME;
+const TOKEN_URL = 'https://yandex.ru/dev/disk/poligon/';
+
+function errText(e) {
+  if (!e) return 'Что-то пошло не так';
+  if (e.name === 'QuotaExceededError') return 'На устройстве не хватило места в хранилище браузера';
+  if (e.status === 401) return 'Яндекс.Диск не принял токен — подключите Диск заново';
+  if (e.status === 507) return 'На Яндекс.Диске закончилось место';
+  if (e instanceof TypeError) return 'Нет связи с Яндекс.Диском';
+  return e.message || String(e);
+}
+async function api(method, path, params, okAlso = []) {
+  const r = await fetch(`${API}${path}?${new URLSearchParams(params || {})}`,
+    { method, headers: { Authorization: 'OAuth ' + settings.token } });
+  if (!r.ok && !okAlso.includes(r.status)) {
+    throw Object.assign(new Error('Яндекс.Диск ответил ошибкой ' + r.status), { status: r.status });
+  }
+  return r;
+}
+const ensureFolder = () => api('PUT', '/resources', { path: FOLDER }, [409]);
+async function listRemote() {
+  const out = new Map();
+  for (let offset = 0; ; offset += 1000) {
+    const j = await (await api('GET', '/resources', { path: FOLDER, limit: 1000, offset,
+      fields: '_embedded.total,_embedded.items.name,_embedded.items.size,_embedded.items.type,_embedded.items.media_type' })).json();
+    const items = (j._embedded && j._embedded.items) || [];
+    for (const it of items) {
+      if (it.type === 'file' && (it.media_type === 'audio' || AUDIO_EXT.test(it.name))) out.set(it.name, it.size || 0);
+    }
+    if (items.length < 1000) break;
+  }
+  return out;
+}
+async function downloadHref(name) {
+  return (await (await api('GET', '/resources/download', { path: FOLDER + '/' + name })).json()).href;
+}
+async function uploadTrack(t) {
+  const blob = await getBlob(t.id);
+  if (!blob) return;
+  const r = await api('GET', '/resources/upload', { path: FOLDER + '/' + t.name, overwrite: 'false' }, [409]);
+  if (r.status !== 409) {                          // 409 — такой файл на Диске уже лежит
+    const { href } = await r.json();
+    let put;
+    try { put = await fetch(href, { method: 'PUT', body: blob }); }
+    catch { throw new Error('Не удалось отправить файл на Яндекс.Диск: ' + t.name); }
+    if (!put.ok) throw Object.assign(new Error('Яндекс.Диск не принял файл (' + put.status + '): ' + t.name), { status: put.status });
+  }
+  t.cloud = t.uploaded = true;
+  await putMeta(t);
+}
+async function uploadPending() {
+  if (!settings.token) return;
+  const pend = tracks.filter(t => t.local && !t.uploaded);
+  if (!pend.length) return;
+  await ensureFolder();
+  let n = 0;
+  try {
+    for (const t of pend) {
+      if (!settings.token) return;
+      setStatus(`Отправляю на Яндекс.Диск ${n + 1} из ${pend.length}: ${t.name}`);
+      await uploadTrack(t);
+      n++;
+    }
+  } finally { render(); }
+  flash(`На Яндекс.Диск отправлено: ${n}`);
+}
+async function sync() {
+  if (!settings.token) return;
+  setStatus('Сверяюсь с Яндекс.Диском…');
+  await ensureFolder();
+  const remote = await listRemote();
+  const byName = new Map(tracks.map(t => [t.name, t]));
+  let fresh = 0;
+  for (const [name, size] of remote) {
+    const t = byName.get(name);
+    if (!t) {
+      tracks.push(await saveTrack({ ...parseName(name), name, size, duration: 0, added: Date.now(),
+        local: false, cloud: true, uploaded: true }, null));
+      fresh++;
+    } else if (!t.cloud || !t.uploaded) { t.cloud = t.uploaded = true; await putMeta(t); }
+  }
+  for (const t of tracks.slice()) {
+    if (remote.has(t.name)) continue;
+    if (!t.local) await removeTrack(t.id);         // с Диска убрали, а здесь файла и не было
+    else if (t.cloud) { t.cloud = false; await putMeta(t); } // остаётся на устройстве, обратно не заливаем
+  }
+  render();
+  setStatus('');
+  if (fresh) flash(`С Яндекс.Диска появилось новых треков: ${fresh}`);
+  await uploadPending();
+}
+async function pullTrack(t) {                      // 'ok' — сохранён в плеере, 'file' — отдан браузеру как файл
+  const href = await downloadHref(t.name);
+  let blob;
+  try {
+    const r = await fetch(href);
+    if (!r.ok) throw new Error(r.status);
+    blob = await r.blob();
+  } catch {
+    el('a', { href, download: t.name, rel: 'noopener' }).click();
+    return 'file';
+  }
+  await attachBlob(t, blob);
+  return 'ok';
+}
+async function pullMany(list) {
+  let ok = 0, asFile = 0;
+  try {
+    for (let i = 0; i < list.length; i++) {
+      if (!settings.token) break;
+      setStatus(`Скачиваю с Яндекс.Диска ${i + 1} из ${list.length}: ${list[i].name}`);
+      if (await pullTrack(list[i]) === 'ok') ok++;
+      else { asFile++; await new Promise(r => setTimeout(r, 700)); }
+    }
+  } finally { render(); }
+  flash(asFile
+    ? `Браузер сохранил файлы в «Загрузки» (${asFile}). Добавьте их в плеер кнопкой «Добавить треки», чтобы слушать без интернета`
+    : `Скачано на это устройство: ${ok}`, asFile ? 9000 : 4000);
+}
+
+/* очередь: операции с Диском идут строго по одной */
+let chain = Promise.resolve(), jobs = 0;
+function enqueue(fn) {
+  jobs++; updateDiskBtn();
+  chain = chain.then(fn).catch(e => flash(errText(e), 7000)).finally(() => { jobs--; updateDiskBtn(); });
+  return chain;
+}
+function updateDiskBtn() {
+  $('#diskBtn').classList.toggle('on', !!settings.token);
+  $('#diskBtn').classList.toggle('busy', jobs > 0);
+  const n = settings.token ? tracks.filter(t => !t.local && t.cloud).length : 0;
+  $('#pull').hidden = !n;
+  $('#pull').textContent = `⬇ Скачать с Диска (${n})`;
+  $('#pull').title = 'Сохранить на это устройство треки, которые пока лежат только на Яндекс.Диске';
+}
+
+function renderDisk(error) {
+  const d = $('#diskDlg');
+  d.textContent = '';
+  const close = el('button', { className: 'btn', textContent: 'Закрыть', onclick: () => d.close() });
+  if (!settings.token) {
+    const input = el('input', { className: 'field', type: 'password', placeholder: 'Вставьте токен сюда', autocomplete: 'off' });
+    const go = el('button', { className: 'btn primary', textContent: 'Подключить' });
+    go.onclick = async () => {
+      const token = input.value.trim();
+      if (!token) return;
+      go.disabled = true; go.textContent = 'Проверяю…';
+      settings.token = token;
+      try {
+        const info = await (await api('GET', '', { fields: 'user.login,user.display_name' })).json();
+        settings.login = (info.user && (info.user.display_name || info.user.login)) || '';
+        saveSettings();
+        renderDisk();
+        enqueue(sync).then(() => { if (d.open && settings.token) renderDisk(); });
+      } catch (e) {
+        settings.token = '';
+        renderDisk(e.status === 401 ? 'Токен не подошёл. Проверьте, что скопировали его целиком.' : errText(e));
+      }
+    };
+    d.append(
+      el('h2', { textContent: 'Подключить Яндекс.Диск' }),
+      el('p', {}, 'Всё, что вы добавляете в плеер, будет копироваться в папку ', el('b', { textContent: '«' + FOLDER_NAME + '»' }),
+        ' на вашем Диске. На другом устройстве подключите тот же Диск — и музыка появится в плеере.'),
+      el('ol', {},
+        el('li', {}, 'Откройте ', el('a', { href: TOKEN_URL, target: '_blank', rel: 'noopener', textContent: 'Полигон Яндекс.Диска' }),
+          ' и войдите в свой аккаунт.'),
+        el('li', { textContent: 'Нажмите «Получить OAuth-токен» и скопируйте его.' }),
+        el('li', { textContent: 'Вставьте токен ниже. Он хранится только в этом браузере.' })),
+      input);
+    if (error) d.append(el('p', { className: 'err', textContent: error }));
+    d.append(el('div', { className: 'acts' }, go, close));
+  } else {
+    const cloudOnly = tracks.filter(t => !t.local && t.cloud).length;
+    const onDisk = tracks.filter(t => t.cloud).length;
+    const usage = el('p', { textContent: '' });
+    api('GET', '', { fields: 'used_space,total_space' }).then(r => r.json()).then(j => {
+      usage.textContent = `Занято ${(j.used_space / 2 ** 30).toFixed(1)} из ${(j.total_space / 2 ** 30).toFixed(0)} ГБ.`;
+    }).catch(() => {});
+    d.append(
+      el('h2', { textContent: 'Яндекс.Диск подключён' }),
+      el('p', {}, 'Аккаунт: ', el('b', { textContent: settings.login || '—' }), '. Папка: ', el('b', { textContent: '«' + FOLDER_NAME + '»' }), '.'),
+      el('p', { textContent: `Треков на Диске: ${onDisk}. Из них не скачано на это устройство: ${cloudOnly}.` }),
+      usage,
+      el('div', { className: 'acts' },
+        el('button', { className: 'btn primary', textContent: 'Синхронизировать', onclick: () => { d.close(); enqueue(sync); } }),
+        el('button', { className: 'btn', textContent: 'Скачать всё на устройство', disabled: !cloudOnly, onclick: () => { d.close(); pullAll(); } }),
+        el('button', { className: 'btn danger', textContent: 'Отключить', onclick: () => {
+          settings.token = ''; settings.login = ''; saveSettings(); updateDiskBtn(); render(); renderDisk();
+        } }),
+        close));
+  }
+}
+const pullAll = () => enqueue(() => pullMany(tracks.filter(t => !t.local && t.cloud)));
+
+/* ---------- плейлисты ---------- */
+function coverUrl(p) {
+  if (!p.cover) return null;
+  if (!coverUrls.has(p.id)) coverUrls.set(p.id, URL.createObjectURL(p.cover));
+  return coverUrls.get(p.id);
+}
+function coverEl(p, glyph = '♪') {
+  const u = p && coverUrl(p);
+  return u ? el('img', { className: 'cover', src: u, alt: '' }) : el('div', { className: 'cover', textContent: glyph });
+}
+async function shrinkImage(file) {
+  try {
+    const bmp = await createImageBitmap(file), side = Math.min(bmp.width, bmp.height), size = Math.min(500, side);
+    const c = el('canvas', { width: size, height: size });
+    c.getContext('2d').drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, size, size);
+    return await new Promise(res => c.toBlob(b => res(b || file), 'image/jpeg', 0.86));
+  } catch { return file; }
+}
+async function createPlaylist(firstTrackName) {
+  const name = (prompt('Название плейлиста') || '').trim();
+  if (!name) return null;
+  const p = { name, tracks: firstTrackName ? [firstTrackName] : [], cover: null, created: Date.now() };
+  p.id = await putPl(p);
+  playlists.push(p);
+  return p;
+}
+function openPlaylist(id) { activePl = id; $('#search').value = ''; render(); $('main').scrollTop = 0; }
+function renderPlaylists() {
+  const nav = $('#pls');
+  nav.textContent = '';
+  const card = (cls, cover, label, onclick) => nav.append(el('button', { className: 'pl ' + cls, onclick, title: label }, cover, el('span', { textContent: label })));
+  card(activePl == null ? 'active' : '', coverEl(null, '♫'), 'Все треки', () => openPlaylist(null));
+  for (const p of playlists) card(p.id === activePl ? 'active' : '', coverEl(p), p.name, () => openPlaylist(p.id));
+  card('new', el('div', { className: 'cover', textContent: '+' }), 'Новый плейлист', async () => {
+    const p = await createPlaylist();
+    if (p) openPlaylist(p.id);
+  });
+
+  const head = $('#plHead'), p = playlists.find(x => x.id === activePl);
+  head.hidden = !p;
+  head.textContent = '';
+  if (!p) return;
+  const pickCover = () => { $('#coverInput').click(); };
+  const cover = coverEl(p, '🖼');
+  cover.title = 'Выбрать обложку';
+  cover.onclick = pickCover;
+  const n = p.tracks.filter(name => tracks.some(t => t.name === name)).length;
+  head.append(cover,
+    el('div', { className: 'info' }, el('b', { textContent: p.name }), el('small', { textContent: 'Плейлист · треков: ' + n })),
+    el('div', { className: 'acts' },
+      el('button', { className: 'btn small', textContent: p.cover ? 'Сменить обложку' : 'Добавить обложку', onclick: pickCover }),
+      el('button', { className: 'btn small', textContent: 'Переименовать', onclick: async () => {
+        const name = (prompt('Название плейлиста', p.name) || '').trim();
+        if (name) { p.name = name; await putPl(p); render(); }
+      } }),
+      el('button', { className: 'btn small danger', textContent: 'Удалить плейлист', onclick: async () => {
+        if (!confirm(`Удалить плейлист «${p.name}»? Сами треки останутся в плеере.`)) return;
+        await req(db.transaction('playlists', 'readwrite').objectStore('playlists').delete(p.id));
+        playlists = playlists.filter(x => x !== p);
+        if (coverUrls.has(p.id)) { URL.revokeObjectURL(coverUrls.get(p.id)); coverUrls.delete(p.id); }
+        openPlaylist(null);
+      } })));
+}
+$('#coverInput').onchange = async e => {
+  const file = e.target.files[0], p = playlists.find(x => x.id === activePl);
+  e.target.value = '';
+  if (!file || !p) return;
+  p.cover = await shrinkImage(file);
+  await putPl(p);
+  if (coverUrls.has(p.id)) { URL.revokeObjectURL(coverUrls.get(p.id)); coverUrls.delete(p.id); }
+  render();
+};
+
+/* меню «в плейлист» у трека */
+function closeMenu() { $('#menu').hidden = true; }
+function openPlMenu(track, anchor) {
+  const m = $('#menu');
+  m.textContent = '';
+  m.append(el('div', { className: 'h', textContent: 'Добавить в плейлист' }));
+  for (const p of playlists) {
+    const inPl = p.tracks.includes(track.name);
+    m.append(el('button', { textContent: (inPl ? '✓ ' : '　') + p.name, onclick: async () => {
+      if (inPl) p.tracks = p.tracks.filter(n => n !== track.name); else p.tracks.push(track.name);
+      await putPl(p);
+      closeMenu(); render();
+      flash(inPl ? `Убрано из «${p.name}»` : `Добавлено в «${p.name}»`, 2000);
+    } }));
+  }
+  m.append(el('button', { textContent: '+ Новый плейлист…', onclick: async () => {
+    closeMenu();
+    const p = await createPlaylist(track.name);
+    if (p) { render(); flash(`Добавлено в «${p.name}»`, 2000); }
+  } }));
+  m.hidden = false;
+  const r = anchor.getBoundingClientRect(), w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + 'px';
+  m.style.top = (r.bottom + h + 8 > innerHeight ? Math.max(8, r.top - h - 4) : r.bottom + 4) + 'px';
+}
+addEventListener('click', e => { if (!e.target.closest('#menu') && !e.target.closest('.rb.add')) closeMenu(); }, true);
+$('main').addEventListener('scroll', closeMenu);
+
+/* ---------- список ---------- */
+const fmt = s => { s = Math.max(0, Math.floor(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+function render() {
+  if (activePl != null && !playlists.some(p => p.id === activePl)) activePl = null;
+  renderPlaylists();
+  const pl = playlists.find(p => p.id === activePl);
+  const base = pl ? pl.tracks.map(n => tracks.find(t => t.name === n)).filter(Boolean) : tracks;
+  const q = $('#search').value.trim().toLowerCase();
+  view = q ? base.filter(t => (t.title + ' ' + t.artist).toLowerCase().includes(q)) : base.slice();
+  const list = $('#list');
+  list.textContent = '';
+  const frag = document.createDocumentFragment();
+  view.forEach((t, i) => {
+    const li = el('li', { className: t.id === currentId ? 'current' : '' });
+    li.dataset.id = t.id;
+    const dur = el('span', { className: 'dur' });
+    if (!t.local) dur.append(el('span', { className: 'st', textContent: '☁', title: 'Лежит на Яндекс.Диске, на это устройство не скачан' }));
+    else if (settings.token && !t.uploaded) dur.append(el('span', { className: 'st', textContent: '↑', title: 'Ждёт отправки на Яндекс.Диск' }));
+    dur.append(t.duration ? fmt(t.duration) : '');
+    const acts = el('div', { className: 'acts-row' });
+    if (!t.local) acts.append(el('button', { className: 'rb dl', textContent: '⬇', title: 'Скачать на это устройство' }));
+    acts.append(el('button', { className: 'rb add', textContent: '＋', title: 'Добавить в плейлист' }),
+      el('button', { className: 'rb del', textContent: '✕', title: pl ? 'Убрать из плейлиста' : 'Удалить из плеера' }));
+    li.append(el('span', { className: 'num', textContent: i + 1 }),
+      el('div', { className: 'meta' }, el('div', { className: 't', textContent: t.title }),
+        el('div', { className: 'a', textContent: t.artist || 'Неизвестный исполнитель' })),
+      dur, acts);
+    frag.append(li);
+  });
+  list.append(frag);
+  $('#empty').hidden = tracks.length > 0;
+  if (tracks.length && !view.length) {
+    list.append(el('li', { className: 'note', textContent: q ? 'Ничего не найдено'
+      : 'В плейлисте пока пусто. Откройте «Все треки» и нажмите ＋ у нужного трека — или добавьте файлы прямо сюда.' }));
+  }
+  const total = view.reduce((s, t) => s + (t.duration || 0), 0);
+  const h = Math.floor(total / 3600), m = Math.round(total % 3600 / 60);
+  $('#count').textContent = view.length ? `${view.length} тр.${total ? ` · ${h ? h + ' ч ' : ''}${m} мин` : ''}` : '';
+  updateDiskBtn();
+}
+function markCurrent() {
+  document.querySelectorAll('#list li.current').forEach(li => li.classList.remove('current'));
+  const li = document.querySelector(`#list li[data-id="${currentId}"]`);
+  if (li) { li.classList.add('current'); li.scrollIntoView({ block: 'nearest' }); }
+}
+
+/* ---------- воспроизведение ---------- */
+async function load(id, autoplay = true) {
+  const t = tracks.find(x => x.id === id);
+  if (!t) return;
+  const seq = ++loadSeq;
+  let src, isBlob = false;
+  if (t.local) {
+    const blob = await getBlob(id);
+    if (!blob) { flash('Файл этого трека не найден в хранилище'); return; }
+    src = URL.createObjectURL(blob); isBlob = true;
+  } else {
+    if (!settings.token) { flash('Этот трек лежит на Яндекс.Диске — подключите Диск, чтобы его слушать'); return; }
+    try { src = await downloadHref(t.name); } catch (e) { flash(errText(e)); return; }
+  }
+  if (seq !== loadSeq) { if (isBlob) URL.revokeObjectURL(src); return; }
+  if (objectUrl) URL.revokeObjectURL(objectUrl);
+  objectUrl = isBlob ? src : null;
+  currentId = id;
+  audio.src = src;
+  settings.last = id; saveSettings();
+  $('#nowT').textContent = t.title;
+  $('#nowA').textContent = t.artist;
+  $('#total').textContent = fmt(t.duration);
+  document.title = (t.artist ? t.artist + ' — ' : '') + t.title;
+  markCurrent();
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist });
+  }
+  if (autoplay) { try { await audio.play(); } catch {} }
+}
+function play(id) {
+  if (currentId != null && currentId !== id) played.push(currentId);
+  if (played.length > 200) played.shift();
+  return load(id);
+}
+function toggle() {
+  if (currentId == null) { if (view.length) play((settings.shuffle ? randomFrom(view) : view[0]).id); return; }
+  audio.paused ? audio.play().catch(() => {}) : audio.pause();
+}
+function randomFrom(arr) {
+  const pool = arr.length > 1 ? arr.filter(t => t.id !== currentId) : arr;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+function next(auto = false) {
+  const pool = view.length ? view : tracks;
+  if (!pool.length) return;
+  if (settings.shuffle) return play(randomFrom(pool).id);
+  const i = pool.findIndex(t => t.id === currentId);
+  if (i === pool.length - 1 && auto && settings.repeat === 'off') return; // конец списка
+  play(pool[(i + 1) % pool.length].id);
+}
+function prev() {
+  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  while (played.length) {
+    const id = played.pop();
+    if (tracks.some(t => t.id === id)) return load(id);
+  }
+  const pool = view.length ? view : tracks;
+  if (!pool.length) return;
+  const i = pool.findIndex(t => t.id === currentId);
+  load(pool[(i - 1 + pool.length) % pool.length].id);
+}
+function stop() {
+  loadSeq++;
+  audio.pause(); audio.removeAttribute('src'); audio.load();
+  if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = null; }
+  currentId = null; settings.last = null; saveSettings();
+  $('#nowT').textContent = 'Ничего не играет'; $('#nowA').textContent = '';
+  $('#cur').textContent = $('#total').textContent = '0:00'; $('#seek').value = 0;
+  document.title = 'Мой плеер';
+}
+
+audio.addEventListener('ended', () => {
+  if (settings.repeat === 'one') { audio.currentTime = 0; audio.play(); } else next(true);
+});
+audio.addEventListener('play', () => $('#playPath').setAttribute('d', ICON.pause));
+audio.addEventListener('pause', () => $('#playPath').setAttribute('d', ICON.play));
+audio.addEventListener('timeupdate', () => {
+  if (seeking) return;
+  $('#cur').textContent = fmt(audio.currentTime);
+  if (audio.duration) $('#seek').value = audio.currentTime / audio.duration * 1000;
+});
+audio.addEventListener('durationchange', () => {
+  if (!isFinite(audio.duration) || !audio.duration) return;
+  $('#total').textContent = fmt(audio.duration);
+  const t = tracks.find(x => x.id === currentId);
+  if (t && !t.duration) {                          // у треков с Диска длительность узнаём при первом прослушивании
+    t.duration = audio.duration; putMeta(t);
+    const cell = document.querySelector(`#list li[data-id="${t.id}"] .dur`);
+    if (cell) cell.append(fmt(t.duration));
+  }
+});
+audio.addEventListener('error', () => { if (audio.getAttribute('src')) flash('Этот трек не удалось воспроизвести'); });
+
+/* ---------- управление ---------- */
+function applyControls() {
+  audio.volume = settings.volume; audio.muted = settings.muted;
+  $('#volume').value = settings.muted ? 0 : settings.volume * 100;
+  $('#volPath').setAttribute('d', settings.muted || !settings.volume ? ICON.muted : ICON.vol);
+  $('#shuffle').classList.toggle('on', settings.shuffle);
+  $('#repeat').classList.toggle('on', settings.repeat !== 'off');
+  $('#repeat').classList.toggle('one', settings.repeat === 'one');
+  $('#repeat').title = { off: 'Повтор выключен (R)', all: 'Повтор всего списка (R)', one: 'Повтор одного трека (R)' }[settings.repeat];
+  saveSettings();
+}
+const toggleShuffle = () => { settings.shuffle = !settings.shuffle; applyControls(); };
+const cycleRepeat = () => { settings.repeat = { off: 'all', all: 'one', one: 'off' }[settings.repeat]; applyControls(); };
+const toggleMute = () => { settings.muted = !settings.muted; if (!settings.muted && !settings.volume) settings.volume = 0.5; applyControls(); };
+
+$('#play').onclick = toggle;
+$('#next').onclick = () => next();
+$('#prev').onclick = prev;
+$('#shuffle').onclick = toggleShuffle;
+$('#repeat').onclick = cycleRepeat;
+$('#mute').onclick = toggleMute;
+$('#volume').oninput = e => { settings.volume = e.target.value / 100; settings.muted = false; applyControls(); };
+$('#seek').oninput = e => { seeking = true; if (audio.duration) $('#cur').textContent = fmt(e.target.value / 1000 * audio.duration); };
+$('#seek').onchange = e => { if (audio.duration) audio.currentTime = e.target.value / 1000 * audio.duration; seeking = false; };
+$('#search').oninput = render;
+$('#addFiles').onclick = () => $('#fileInput').click();
+$('#addFolder').onclick = () => $('#folderInput').click();
+$('#diskBtn').onclick = () => { renderDisk(); $('#diskDlg').showModal(); };
+$('#pull').onclick = pullAll;
+for (const id of ['#fileInput', '#folderInput']) {
+  $(id).onchange = e => { addFiles(e.target.files); e.target.value = ''; };
+}
+$('#list').onclick = async e => {
+  const li = e.target.closest('li[data-id]');
+  if (!li) return;
+  const id = +li.dataset.id, t = tracks.find(x => x.id === id);
+  if (!t) return;
+  if (e.target.closest('.add')) return openPlMenu(t, e.target.closest('.add'));
+  if (e.target.closest('.dl')) return enqueue(() => pullMany([t]));
+  if (e.target.closest('.del')) {
+    const pl = playlists.find(p => p.id === activePl);
+    if (pl) {                                      // внутри плейлиста крестик только убирает из него
+      pl.tracks = pl.tracks.filter(n => n !== t.name);
+      await putPl(pl);
+      return render();
+    }
+    if (t.cloud && settings.token) {
+      if (!confirm(`Удалить «${t.title}» из плеера и с Яндекс.Диска? На Диске файл попадёт в Корзину.`)) return;
+      try { await api('DELETE', '/resources', { path: FOLDER + '/' + t.name }, [404]); }
+      catch (err) { return flash(errText(err)); }
+    }
+    await removeTrack(id);
+    for (const p of playlists) {
+      if (p.tracks.includes(t.name)) { p.tracks = p.tracks.filter(n => n !== t.name); await putPl(p); }
+    }
+    return render();
+  }
+  if (id === currentId) toggle(); else play(id);
+};
+
+let dragDepth = 0;
+const hasFiles = e => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; document.body.classList.add('drag'); });
+addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('drag'); } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', async e => {
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove('drag');
+  addFiles(await filesFromDrop(e.dataTransfer));
+});
+
+addEventListener('keydown', e => {
+  if (e.target.matches('input:not([type=range]), textarea') || $('#diskDlg').open || e.ctrlKey || e.altKey || e.metaKey) return;
+  const k = e.code;
+  if (k === 'Space') { e.preventDefault(); toggle(); }
+  else if (k === 'ArrowRight' && e.shiftKey) next();
+  else if (k === 'ArrowLeft' && e.shiftKey) prev();
+  else if (k === 'ArrowRight') { e.preventDefault(); audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 5); }
+  else if (k === 'ArrowLeft') { e.preventDefault(); audio.currentTime = Math.max(0, audio.currentTime - 5); }
+  else if (k === 'KeyS') toggleShuffle();
+  else if (k === 'KeyR') cycleRepeat();
+  else if (k === 'KeyM') toggleMute();
+  else if (k === 'Escape') closeMenu();
+});
+
+if ('mediaSession' in navigator) {
+  const ms = navigator.mediaSession;
+  ms.setActionHandler('play', () => audio.play());
+  ms.setActionHandler('pause', () => audio.pause());
+  ms.setActionHandler('nexttrack', () => next());
+  ms.setActionHandler('previoustrack', prev);
+}
+
+/* ---------- запуск ---------- */
+(async () => {
+  applyControls();
+  try {
+    db = await openDB();
+    tracks = await req(db.transaction('tracks').objectStore('tracks').getAll());
+    playlists = await req(db.transaction('playlists').objectStore('playlists').getAll());
+  } catch (e) {
+    setStatus('Браузер не дал доступ к хранилищу — треки не сохранятся. Откройте плеер в обычном (не приватном) окне.');
+    return;
+  }
+  for (const t of tracks) {                        // записи из первой версии плеера
+    if (t.local === undefined) { t.local = true; t.cloud = false; t.uploaded = false; }
+  }
+  render();
+  const last = tracks.find(t => t.id === settings.last);
+  if (last && last.local) load(last.id, false);
+  if (settings.token) enqueue(sync);
+})();
+</script>
+</body>
+</html>
