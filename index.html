@@ -530,18 +530,18 @@ function schedulePlSync() {
   plTimer = setTimeout(() => enqueue(syncPlaylists), 1500);
 }
 async function touchPl(p) { p.updated = Math.max(Date.now(), (p.updated || 0) + 1); await putPl(p); schedulePlSync(); }
-/* Файл с серверов скачивания Диска. Они ждут тот же токен, что и сам Диск;
-   запрос без токена оставлен запасным на случай, если ссылка уже подписана. */
+/* Файл с серверов скачивания Диска. Главное — no-referrer: если браузер сообщает, с какого сайта
+   пришёл запрос, Диск отвечает отказом (403). Запрос с токеном оставлен запасным. */
 async function diskGet(href) {
   const notes = [];
-  for (const headers of [{ Authorization: 'OAuth ' + settings.token }, null]) {
+  for (const headers of [null, { Authorization: 'OAuth ' + settings.token }]) {
     try {
-      const r = await fetch(href, headers ? { headers } : {});
+      const r = await fetch(href, { referrerPolicy: 'no-referrer', ...(headers ? { headers } : {}) });
       if (r.ok) return r;
       notes.push('код ' + r.status);
     } catch { notes.push('нет ответа'); }
   }
-  throw new Error(`Яндекс.Диск не отдал файл (с токеном: ${notes[0]}; без токена: ${notes[1]})`);
+  throw new Error(`Яндекс.Диск не отдал файл (без токена: ${notes[0]}; с токеном: ${notes[1]})`);
 }
 const MIME = { mp3: 'audio/mpeg', m4a: 'audio/mp4', m4b: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', oga: 'audio/ogg',
   opus: 'audio/ogg', wav: 'audio/wav', flac: 'audio/flac', webm: 'audio/webm', weba: 'audio/webm' };
