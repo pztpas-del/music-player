@@ -69,6 +69,21 @@
   #plHead .acts { display: flex; gap: 8px; flex-wrap: wrap; }
   #count { padding: 10px 18px 0; }
 
+  #bar { display: flex; align-items: center; gap: 8px; padding: 10px 18px 0; flex-wrap: wrap; }
+  #bar #count { padding: 0; margin-left: 4px; }
+  .wavecover { background: linear-gradient(135deg, #ff5f9e, #7a5cff 50%, #2ec5ff); background-size: 200% 200%; animation: wave 7s ease infinite; color: #fff; }
+  @keyframes wave { 50% { background-position: 100% 100%; } }
+  #waveHead { padding: 14px 18px 0; }
+  #waveHead h2 { margin: 0 0 2px; font-size: 20px; }
+  #waveHead p { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; align-items: center; }
+  .chips .lbl { color: var(--muted); font-size: 13px; width: 88px; }
+  .chip { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel2); font-size: 13px; }
+  .chip:hover { border-color: var(--muted); }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tg { font-size: 12px; opacity: .8; }
+  #aiLine { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 13px; margin: 2px 0 4px; }
+
   main { flex: 1; overflow-y: auto; position: relative; }
   #list { list-style: none; margin: 0; padding: 6px 8px 20px; }
   #list li {
@@ -155,6 +170,8 @@
     header h1 { font-size: 17px; }
     #search { order: 5; max-width: none; flex-basis: 100%; }
     #pls { padding: 12px 12px 8px; }
+    #bar, #waveHead { padding-left: 12px; padding-right: 12px; }
+    .chips .lbl { width: 100%; }
     .pl { flex-basis: 76px; width: 76px; } .pl .cover { width: 76px; height: 76px; }
     #list li { grid-template-columns: 1fr auto auto; } .num { display: none; }
     footer { padding: 8px 12px 12px; }
@@ -178,7 +195,12 @@
 <div id="status"></div>
 <main>
   <div id="plHead" hidden></div>
-  <div id="count"></div>
+  <div id="waveHead" hidden></div>
+  <div id="bar" hidden>
+    <button class="btn small primary" id="playAll">▶ Слушать</button>
+    <button class="btn small" id="shuffleAll" title="Включить треки отсюда в случайном порядке">🔀 Перемешать</button>
+    <span id="count"></span>
+  </div>
   <ul id="list"></ul>
   <div id="empty" hidden>
     <b>Здесь пока нет музыки</b>
@@ -225,8 +247,10 @@ const ICON = {
 const audio = new Audio();
 let db, tracks = [], playlists = [], view = [], activePl = null;
 let currentId = null, objectUrl = null, played = [], seeking = false, loadSeq = 0;
+let ctxPl = null, bag = [], bagUsed = false;      // откуда идёт музыка: null — все треки, 'wave' — волна, иначе id плейлиста
 const coverUrls = new Map();
-const settings = Object.assign({ volume: 0.8, muted: false, shuffle: false, repeat: 'off', last: null, token: '', login: '' },
+const settings = Object.assign({ volume: 0.8, muted: false, shuffle: false, repeat: 'off', last: null, token: '', login: '',
+  wave: { mood: '', genres: [] }, aiAuto: false },
   JSON.parse(localStorage.getItem('player-settings') || '{}'));
 const saveSettings = () => localStorage.setItem('player-settings', JSON.stringify(settings));
 
@@ -342,6 +366,7 @@ async function addFiles(fileList) {
   flash(parts.join(', '));
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
   if (settings.token && added) enqueue(uploadPending);
+  if (settings.aiAuto && added) analyzeAll(false);
 }
 
 /* перетаскивание, в том числе папок */
@@ -462,7 +487,7 @@ async function sync() {
   if (fresh) flash(`С Яндекс.Диска появилось новых треков: ${fresh}`);
   lastSync = Date.now();
   let plError;
-  try { await syncPlaylists(); } catch (e) { plError = e; }
+  try { await syncPlaylists(); await syncTags(); } catch (e) { plError = e; }
   await uploadPending();
   if (plError) throw plError;
 }
@@ -671,6 +696,216 @@ function renderDisk(error) {
 }
 const pullAll = () => enqueue(() => pullMany(tracks.filter(t => !t.local && t.cloud)));
 
+/* ---------- нейросеть: жанр и настроение ---------- */
+/* Порядок меток жанровой модели (msd-musicnn-1). Из 50 меток собираем восемь жанров плеера. */
+const TAGS = ['rock', 'pop', 'alternative', 'indie', 'electronic', 'female vocalists', 'dance', '00s', 'alternative rock', 'jazz',
+  'beautiful', 'metal', 'chillout', 'male vocalists', 'classic rock', 'soul', 'indie rock', 'Mellow', 'electronica', '80s', 'folk', '90s',
+  'chill', 'instrumental', 'punk', 'oldies', 'blues', 'hard rock', 'ambient', 'acoustic', 'experimental', 'female vocalist', 'guitar',
+  'Hip-Hop', '70s', 'party', 'country', 'easy listening', 'sexy', 'catchy', 'funk', 'electro', 'heavy metal', 'Progressive rock', '60s',
+  'rnb', 'indie pop', 'sad', 'House', 'happy'];
+const GENRES = [
+  ['rock', 'Рок', { rock: 1, 'alternative rock': 1, 'classic rock': 1, 'indie rock': 1, 'hard rock': 1, punk: 1, 'Progressive rock': 1, alternative: .7, indie: .6 }],
+  ['pop', 'Поп', { pop: 1, 'indie pop': 1 }],
+  ['electronic', 'Электроника', { electronic: 1, electronica: 1, electro: 1, House: 1, dance: .8 }],
+  ['hiphop', 'Хип-хоп', { 'Hip-Hop': 1, rnb: 1 }],
+  ['folk', 'Фолк и акустика', { folk: 1, country: 1, acoustic: 1 }],
+  ['jazz', 'Джаз и соул', { jazz: 1, soul: 1, funk: 1, blues: .7 }],
+  ['ambient', 'Эмбиент и чилл', { ambient: 1, chillout: 1, chill: 1, 'easy listening': 1, instrumental: .7 }],
+  ['metal', 'Метал', { metal: 1, 'heavy metal': 1 }],
+];
+const MOODS = [['energetic', 'Бодрое'], ['happy', 'Весёлое'], ['calm', 'Спокойное'], ['sad', 'Грустное']];
+const nameOf = (list, id) => (list.find(x => x[0] === id) || [])[1] || '';
+
+function packAi(r) {                               // то, что хранится у трека: 8 жанров, 4 оценки настроения, громкость
+  const g = {};
+  for (const [id, , map] of GENRES) g[id] = +Math.max(...Object.entries(map).map(([tag, w]) => w * r.tags[TAGS.indexOf(tag)])).toFixed(3);
+  const m = r.moods;
+  return { v: 1, g, h: +m.happy.toFixed(3), s: +m.sad.toFixed(3), r: +m.relaxed.toFixed(3), a: +m.aggressive.toFixed(3), e: +r.rms.toFixed(3) };
+}
+/* Оценки настроения у моделей смещены (почти всё «немного грустное»), поэтому сравниваем трек
+   не с нулём, а со средним по вашей библиотеке. Пока разобрано мало — со средним из проверочной выборки. */
+const PRIOR = { h: [.56, .2], s: [.74, .2], r: [.6, .2], a: [.22, .17] };
+let aiStats = PRIOR, aiStatsN = -1;
+function stats() {
+  const A = tracks.filter(t => t.ai);
+  if (A.length === aiStatsN) return aiStats;
+  aiStatsN = A.length;
+  if (A.length < 30) return aiStats = PRIOR;
+  const out = {};
+  for (const k of 'hsra') {
+    const mean = A.reduce((x, t) => x + t.ai[k], 0) / A.length;
+    const sd = Math.sqrt(A.reduce((x, t) => x + (t.ai[k] - mean) ** 2, 0) / A.length);
+    out[k] = [mean, Math.max(.05, sd)];
+  }
+  return aiStats = out;
+}
+function moodScores(t) {
+  const S = stats(), z = k => (t.ai[k] - S[k][0]) / S[k][1];
+  return { energetic: z('a') - .5 * z('r'), happy: z('h') - .5 * z('s'), calm: z('r') - .5 * z('a'), sad: z('s') - .5 * z('h') };
+}
+const moodOf = t => { const m = moodScores(t); return Object.keys(m).reduce((a, b) => m[b] > m[a] ? b : a); };
+const genreOf = t => GENRES.reduce((a, b) => t.ai.g[b[0]] > t.ai.g[a[0]] ? b : a)[0];
+
+let aiW = null, aiSeq = 0, aiRun = null, tagTimer;
+const aiPend = new Map();
+function aiWorker() {
+  if (aiW) return aiW;
+  aiW = new Worker('ai/worker.js');
+  aiW.onmessage = e => {
+    const p = aiPend.get(e.data.id);
+    aiPend.delete(e.data.id);
+    if (p) e.data.error ? p[1](new Error(e.data.error)) : p[0](e.data);
+  };
+  aiW.onerror = () => {
+    for (const p of aiPend.values()) p[1](Object.assign(new Error('Нейросеть не запустилась в этом браузере'), { fatal: true }));
+    aiPend.clear(); aiW = null;
+  };
+  return aiW;
+}
+const aiAsk = signal => new Promise((res, rej) => {
+  const id = ++aiSeq;
+  aiPend.set(id, [res, rej]);
+  aiWorker().postMessage({ id, signal }, [signal.buffer]);
+});
+async function excerpt16k(blob) {                  // минута из середины трека: моно, 16 кГц
+  const AC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const a = await new AC(1, 16000, 16000).decodeAudioData(await blob.arrayBuffer());
+  const len = Math.min(a.length, 16000 * 60), start = Math.floor((a.length - len) * .4), out = new Float32Array(len);
+  for (let c = 0; c < a.numberOfChannels; c++) {
+    const d = a.getChannelData(c);
+    for (let i = 0; i < len; i++) out[i] += d[start + i] / a.numberOfChannels;
+  }
+  return out;
+}
+/* Разбор идёт по одному треку в фоне. Треки с Диска для этого скачиваются, поэтому их берём только по кнопке. */
+async function analyzeAll(withCloud) {
+  if (aiRun) return;
+  const list = tracks.filter(t => !t.ai && !t.aiFail && (t.local || (withCloud && t.cloud && settings.token)))
+    .sort((a, b) => (b.local ? 1 : 0) - (a.local ? 1 : 0));
+  if (!list.length) return;
+  const run = aiRun = { stop: false, done: 0, total: list.length };
+  settings.aiAuto = true; saveSettings();
+  renderAiLine();
+  let fresh = 0, fails = 0;
+  for (const t of list) {
+    if (run.stop) break;
+    if (!tracks.includes(t) || t.ai) { run.done++; continue; }
+    try {
+      const blob = t.local ? await getBlob(t.id) : await (await diskGet(await downloadHref(t.name))).blob();
+      if (!blob) throw new Error('нет файла');
+      t.ai = packAi(await aiAsk(await excerpt16k(blob)));
+      if (tracks.includes(t)) await putMeta(t);
+      fresh++; fails = 0;
+      const row = document.querySelector(`#list li[data-id="${t.id}"] .a`);
+      if (row && !row.querySelector('.tg')) row.append(tagEl(t));
+    } catch (e) {
+      t.aiFail = true;                             // до перезапуска плеера к этому треку не возвращаемся
+      if (e.fatal || ++fails >= 5) { flash(e.fatal ? e.message : 'Разбор музыки остановлен: несколько треков подряд не открылись', 8000); break; }
+    }
+    run.done++;
+    renderAiLine();
+    if (fresh && fresh % 40 === 0) { scheduleTagSync(); if (activePl === 'wave') render(); }
+  }
+  aiRun = null;
+  if (aiW) { aiW.terminate(); aiW = null; aiPend.clear(); }
+  if (fresh) { scheduleTagSync(); render(); flash(`Нейросеть разобрала треков: ${fresh}`); } else renderAiLine();
+}
+function scheduleTagSync() {
+  if (!settings.token) return;
+  clearTimeout(tagTimer);
+  tagTimer = setTimeout(() => enqueue(syncTags), 3000);
+}
+/* Результаты разбора лежат на Диске в _плеер/tags.json, чтобы каждый трек разбирался один раз на все устройства. */
+async function syncTags() {
+  if (!settings.token) return;
+  const r = await api('GET', '/resources/download', { path: DATA + '/tags.json' }, [404]);
+  let remote = {};
+  if (r.status !== 404) {
+    try { remote = (await (await diskGet((await r.json()).href)).json()).tracks || {}; }
+    catch (e) { throw new Error('Не удалось прочитать разметку жанров с Яндекс.Диска. ' + (e.message || '')); }
+  }
+  const got = tracks.filter(t => !t.ai && remote[t.name]);
+  if (got.length) {
+    const tx = db.transaction('tracks', 'readwrite');
+    for (const t of got) { t.ai = remote[t.name]; tx.objectStore('tracks').put(t); }
+    await txDone(tx);
+  }
+  let push = false;
+  for (const t of tracks) if (t.ai && !remote[t.name]) { remote[t.name] = t.ai; push = true; }
+  if (push) await uploadBlob(DATA + '/tags.json', new Blob([JSON.stringify({ v: 1, tracks: remote })], { type: 'application/json' }), true);
+  if (got.length) render();
+}
+const tagEl = t => el('span', { className: 'tg', textContent: ` · ${nameOf(GENRES, genreOf(t))} · ${nameOf(MOODS, moodOf(t)).toLowerCase()}` });
+
+/* ---------- Моя волна ---------- */
+function wavePool() {
+  const { mood, genres } = settings.wave;
+  if (!mood && !genres.length) return tracks;
+  let pool = tracks.filter(t => t.ai);
+  if (genres.length) {                             // жанр подходит, если он у трека главный или почти главный
+    pool = pool.filter(t => { const top = Math.max(...Object.values(t.ai.g)); return genres.some(id => t.ai.g[id] >= top * .7); });
+  }
+  if (mood) {
+    const scored = pool.map(t => [t, moodScores(t)[mood], moodOf(t)]).sort((a, b) => b[1] - a[1]);
+    const fit = scored.filter(x => x[2] === mood);
+    pool = (fit.length >= 3 ? fit : scored.slice(0, 3)).map(x => x[0]);   // совсем пустой волну не оставляем
+  }
+  return pool;
+}
+function waveNext() {                              // случайный трек из волны: недавние не повторяем, пропускаемые берём реже
+  const pool = wavePool();
+  if (!pool.length) return null;
+  const recent = new Set(played.slice(-Math.min(30, Math.floor(pool.length / 2))));
+  recent.add(currentId);
+  let cand = pool.filter(t => !recent.has(t.id));
+  if (!cand.length) cand = pool;
+  const w = cand.map(t => Math.min(3, Math.max(.2, (2 + (t.plays || 0)) / (2 + 2 * (t.skips || 0)))));
+  let x = Math.random() * w.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < cand.length; i++) if ((x -= w[i]) <= 0) return cand[i].id;
+  return cand[cand.length - 1].id;
+}
+function renderAiLine() {
+  const line = $('#aiLine');
+  if (!line) return;
+  line.textContent = '';
+  const done = tracks.filter(t => t.ai).length, left = tracks.filter(t => !t.ai && !t.aiFail).length;
+  const cloudLeft = tracks.filter(t => !t.ai && !t.aiFail && !t.local).length;
+  if (aiRun) {
+    line.append(`Нейросеть разбирает музыку: ${aiRun.done} из ${aiRun.total}. Плеером можно пользоваться.`,
+      el('button', { className: 'btn small', textContent: 'Остановить', onclick: () => { aiRun.stop = true; } }));
+  } else if (!tracks.length) {
+    line.append('Добавьте музыку — и нейросеть определит её жанр и настроение.');
+  } else if (left) {
+    line.append(`Жанр и настроение определены у ${done} из ${tracks.length} треков — волна по настройкам подбирает только из них.`,
+      el('button', { className: 'btn small primary', textContent: `Разобрать остальные (${left})`,
+        title: cloudLeft ? `Из них ${cloudLeft} лежат только на Яндекс.Диске — для разбора они будут скачаны (расходует трафик)` : 'Примерно полторы секунды на трек',
+        onclick: () => analyzeAll(true) }));
+  } else {
+    line.append(`Жанр и настроение определены у всех треков (${done}).`);
+  }
+}
+function renderWaveHead() {
+  const head = $('#waveHead');
+  head.hidden = activePl !== 'wave';
+  head.textContent = '';
+  if (head.hidden) return;
+  const w = settings.wave;
+  const chip = (label, on, change) => el('button', { className: 'chip' + (on ? ' on' : ''), textContent: label,
+    onclick: () => { change(); saveSettings(); render(); } });
+  head.append(
+    el('h2', { textContent: 'Моя волна' }),
+    el('p', { textContent: 'Бесконечный поток из вашей музыки. Выберите настроение и жанр — плеер сам подберёт подходящие треки.' }),
+    el('div', { className: 'chips' }, el('span', { className: 'lbl', textContent: 'Настроение' }),
+      chip('Любое', !w.mood, () => { w.mood = ''; }),
+      ...MOODS.map(([id, name]) => chip(name, w.mood === id, () => { w.mood = w.mood === id ? '' : id; }))),
+    el('div', { className: 'chips' }, el('span', { className: 'lbl', textContent: 'Жанр' }),
+      chip('Любой', !w.genres.length, () => { w.genres = []; }),
+      ...GENRES.map(([id, name]) => chip(name, w.genres.includes(id),
+        () => { w.genres = w.genres.includes(id) ? w.genres.filter(x => x !== id) : [...w.genres, id]; }))),
+    el('div', { id: 'aiLine' }));
+  renderAiLine();
+}
+
 /* ---------- плейлисты ---------- */
 function coverUrl(p) {
   if (!coverUrls.has(p.id) && p.cover) coverUrls.set(p.id, URL.createObjectURL(p.cover));
@@ -709,6 +944,7 @@ function renderPlaylists() {
   const nav = $('#pls');
   nav.textContent = '';
   const card = (cls, cover, label, onclick) => nav.append(el('button', { className: 'pl ' + cls, onclick, title: label }, cover, el('span', { textContent: label })));
+  card(activePl === 'wave' ? 'active' : '', el('div', { className: 'cover wavecover', textContent: '≋' }), 'Моя волна', () => openPlaylist('wave'));
   card(activePl == null ? 'active' : '', coverEl(null, '♫'), 'Все треки', () => openPlaylist(null));
   for (const p of playlists) card(p.id === activePl ? 'active' : '', coverEl(p), p.name, () => openPlaylist(p.id));
   card('new', el('div', { className: 'cover', textContent: '+' }), 'Новый плейлист', async () => {
@@ -786,16 +1022,18 @@ $('main').addEventListener('scroll', closeMenu);
 /* ---------- список ---------- */
 const fmt = s => { s = Math.max(0, Math.floor(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 function render() {
-  if (activePl != null && !playlists.some(p => p.id === activePl)) activePl = null;
+  if (activePl != null && activePl !== 'wave' && !playlists.some(p => p.id === activePl)) activePl = null;
   renderPlaylists();
-  const pl = playlists.find(p => p.id === activePl);
-  const base = pl ? pl.tracks.map(n => tracks.find(t => t.name === n)).filter(Boolean) : tracks;
+  renderWaveHead();
+  const pl = playlists.find(p => p.id === activePl), wave = activePl === 'wave';
+  const base = poolFor(activePl);
   const q = $('#search').value.trim().toLowerCase();
   view = q ? base.filter(t => (t.title + ' ' + t.artist).toLowerCase().includes(q)) : base.slice();
   const list = $('#list');
   list.textContent = '';
   const frag = document.createDocumentFragment();
-  view.forEach((t, i) => {
+  const ROWS = wave ? 300 : Infinity;               // в волне показываем начало подборки, играет она из всей
+  view.slice(0, ROWS).forEach((t, i) => {
     const li = el('li', { className: t.id === currentId ? 'current' : '' });
     li.dataset.id = t.id;
     const dur = el('span', { className: 'dur' });
@@ -804,11 +1042,11 @@ function render() {
     dur.append(t.duration ? fmt(t.duration) : '');
     const acts = el('div', { className: 'acts-row' });
     if (!t.local) acts.append(el('button', { className: 'rb dl', textContent: '⬇', title: 'Скачать на это устройство, чтобы слушать без интернета' }));
-    acts.append(el('button', { className: 'rb add', textContent: '＋', title: 'Добавить в плейлист' }),
-      el('button', { className: 'rb del', textContent: '✕', title: pl ? 'Убрать из плейлиста' : 'Удалить из плеера' }));
+    acts.append(el('button', { className: 'rb add', textContent: '＋', title: 'Добавить в плейлист' }));
+    if (!wave) acts.append(el('button', { className: 'rb del', textContent: '✕', title: pl ? 'Убрать из плейлиста' : 'Удалить из плеера' }));
     li.append(el('span', { className: 'num', textContent: i + 1 }),
       el('div', { className: 'meta' }, el('div', { className: 't', textContent: t.title }),
-        el('div', { className: 'a', textContent: t.artist || 'Неизвестный исполнитель' })),
+        el('div', { className: 'a' }, t.artist || 'Неизвестный исполнитель', t.ai ? tagEl(t) : '')),
       dur, acts);
     frag.append(li);
   });
@@ -816,11 +1054,16 @@ function render() {
   $('#empty').hidden = tracks.length > 0;
   if (tracks.length && !view.length) {
     list.append(el('li', { className: 'note', textContent: q ? 'Ничего не найдено'
+      : wave ? 'Под такие настройки треков пока нет. Смените настройки или дайте нейросети разобрать больше музыки.'
       : 'В плейлисте пока пусто. Откройте «Все треки» и нажмите ＋ у нужного трека — или добавьте файлы прямо сюда.' }));
   }
+  $('#bar').hidden = !tracks.length;
+  $('#playAll').textContent = wave ? '▶ Включить волну' : '▶ Слушать';
+  $('#shuffleAll').hidden = wave;
   const total = view.reduce((s, t) => s + (t.duration || 0), 0);
   const h = Math.floor(total / 3600), m = Math.round(total % 3600 / 60);
-  $('#count').textContent = view.length ? `${view.length} тр.${total ? ` · ${h ? h + ' ч ' : ''}${m} мин` : ''}` : '';
+  $('#count').textContent = !view.length ? '' : wave && (settings.wave.mood || settings.wave.genres.length) ? `Подходит треков: ${view.length}`
+    : `${view.length} тр.${total ? ` · ${h ? h + ' ч ' : ''}${m} мин` : ''}`;
   updateDiskBtn();
 }
 function markCurrent() {
@@ -865,18 +1108,50 @@ function play(id) {
   if (played.length > 200) played.shift();
   return load(id);
 }
+function poolFor(pl) {                             // треки того места, откуда играет музыка
+  if (pl === 'wave') return wavePool();
+  const p = playlists.find(x => x.id === pl);
+  if (!p) return tracks;
+  const byName = new Map(tracks.map(t => [t.name, t]));
+  return p.tracks.map(n => byName.get(n)).filter(Boolean);
+}
+function setContext(pl) { ctxPl = pl; bag = []; bagUsed = false; }
+/* Перемешивание «колодой»: каждый трек звучит один раз, пока не прозвучат все. */
+function shuffleNext(pool, auto, fresh) {
+  const ids = new Set(pool.map(t => t.id)), skip = fresh ? null : currentId;   // на старте в колоду идут все треки
+  bag = bag.filter(id => ids.has(id) && id !== skip);
+  if (!bag.length) {
+    if (auto && bagUsed && settings.repeat === 'off') { bagUsed = false; return null; }   // всё прослушано
+    bag = pool.map(t => t.id).filter(id => id !== skip);
+    for (let i = bag.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; }
+    if (!bag.length) return pool[0].id;
+  }
+  bagUsed = true;
+  return bag.pop();
+}
+function startPlay(shuffled) {                     // «Слушать», «Перемешать», «Включить волну» над списком
+  setContext(activePl);
+  if (ctxPl === 'wave') {
+    const id = waveNext();
+    return id == null ? flash('Под такие настройки треков пока нет') : play(id);
+  }
+  if (!view.length) return;
+  if (settings.shuffle !== shuffled) { settings.shuffle = shuffled; applyControls(); }
+  play(shuffled ? shuffleNext(view, false, true) : view[0].id);
+}
 function toggle() {
-  if (currentId == null) { if (view.length) play((settings.shuffle ? randomFrom(view) : view[0]).id); return; }
+  if (currentId == null) return startPlay(settings.shuffle);
   audio.paused ? audio.play().catch(() => {}) : audio.pause();
 }
-function randomFrom(arr) {
-  const pool = arr.length > 1 ? arr.filter(t => t.id !== currentId) : arr;
-  return pool[Math.floor(Math.random() * pool.length)];
-}
 function next(auto = false) {
-  const pool = view.length ? view : tracks;
+  const cur = tracks.find(t => t.id === currentId);
+  if (!auto && cur && audio.duration && audio.currentTime > 2 && audio.currentTime < audio.duration * .5) {
+    cur.skips = (cur.skips || 0) + 1; putMeta(cur);          // переключили в первой половине — трек, видимо, не зашёл
+  }
+  if (ctxPl === 'wave') { const id = waveNext(); if (id != null) play(id); return; }
+  const pool = poolFor(ctxPl);
   if (!pool.length) return;
-  if (settings.shuffle) return play(randomFrom(pool).id);
+  if (settings.shuffle) { const id = shuffleNext(pool, auto); if (id != null) play(id); return; }
   const i = pool.findIndex(t => t.id === currentId);
   if (i === pool.length - 1 && auto && settings.repeat === 'off') return; // конец списка
   play(pool[(i + 1) % pool.length].id);
@@ -887,8 +1162,8 @@ function prev() {
     const id = played.pop();
     if (tracks.some(t => t.id === id)) return load(id);
   }
-  const pool = view.length ? view : tracks;
-  if (!pool.length) return;
+  const pool = poolFor(ctxPl);
+  if (!pool.length || ctxPl === 'wave') return;
   const i = pool.findIndex(t => t.id === currentId);
   load(pool[(i - 1 + pool.length) % pool.length].id);
 }
@@ -903,6 +1178,8 @@ function stop() {
 }
 
 audio.addEventListener('ended', () => {
+  const cur = tracks.find(t => t.id === currentId);
+  if (cur) { cur.plays = (cur.plays || 0) + 1; putMeta(cur); }   // дослушанные треки волна ставит чаще
   if (settings.repeat === 'one') { audio.currentTime = 0; audio.play(); } else next(true);
 });
 audio.addEventListener('play', () => $('#playPath').setAttribute('d', ICON.pause));
@@ -953,11 +1230,13 @@ function applyControls() {
   $('#repeat').title = { off: 'Повтор выключен (R)', all: 'Повтор всего списка (R)', one: 'Повтор одного трека (R)' }[settings.repeat];
   saveSettings();
 }
-const toggleShuffle = () => { settings.shuffle = !settings.shuffle; applyControls(); };
+const toggleShuffle = () => { settings.shuffle = !settings.shuffle; bag = []; bagUsed = false; applyControls(); };
 const cycleRepeat = () => { settings.repeat = { off: 'all', all: 'one', one: 'off' }[settings.repeat]; applyControls(); };
 const toggleMute = () => { settings.muted = !settings.muted; if (!settings.muted && !settings.volume) settings.volume = 0.5; applyControls(); };
 
 $('#play').onclick = toggle;
+$('#playAll').onclick = () => startPlay(false);
+$('#shuffleAll').onclick = () => startPlay(true);
 $('#next').onclick = () => next();
 $('#prev').onclick = prev;
 $('#shuffle').onclick = toggleShuffle;
@@ -999,7 +1278,9 @@ $('#list').onclick = async e => {
     }
     return render();
   }
-  if (id === currentId) toggle(); else play(id);
+  if (id === currentId) return toggle();
+  setContext(activePl);
+  play(id);
 };
 
 let dragDepth = 0;
@@ -1076,6 +1357,7 @@ if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigat
   const last = tracks.find(t => t.id === settings.last);
   if (last && last.local) load(last.id, false);
   if (settings.token) enqueue(sync);
+  if (settings.aiAuto) setTimeout(() => analyzeAll(false), 4000);   // продолжаем разбор, начатый в прошлый раз
 })();
 </script>
 </body>

@@ -1,0 +1,18 @@
+Файлы в этой папке — сторонние, плеер использует их без изменений.
+
+essentia-wasm.module.js, essentia.js-model.umd.js
+  Essentia.js — Music Technology Group, Universitat Pompeu Fabra.
+  Лицензия: GNU Affero General Public License v3.0.
+  Источник: https://github.com/MTG/essentia.js
+
+msd-musicnn-1/, mood_happy/, mood_sad/, mood_relaxed/, mood_aggressive/
+  Модели MusiCNN — © Universitat Pompeu Fabra, 2019–2020.
+  Лицензия: Creative Commons Attribution-NonCommercial-NoDerivatives 4.0
+  (только некоммерческое использование, без изменений, с указанием авторов).
+  Источник: https://github.com/MTG/essentia.js (examples), https://essentia.upf.edu/models.html
+
+tf.min.js
+  TensorFlow.js 3.21.0 — © Google LLC. Лицензия: Apache License 2.0.
+  Источник: https://github.com/tensorflow/tfjs
+
+worker.js — часть плеера.
