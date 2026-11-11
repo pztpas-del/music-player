@@ -87,11 +87,15 @@
   main { flex: 1; overflow-y: auto; position: relative; }
   #list { list-style: none; margin: 0; padding: 6px 8px 20px; }
   #list li {
-    display: grid; grid-template-columns: 30px 1fr auto auto; gap: 10px; align-items: center;
+    display: grid; grid-template-columns: 20px 30px 1fr auto auto; gap: 10px; align-items: center;
     padding: 7px 10px; border-radius: 8px; cursor: pointer; user-select: none;
   }
   #list li:hover { background: var(--panel); }
   #list li.current { background: var(--panel2); }
+  #list li.dragging { background: var(--panel2); box-shadow: 0 6px 20px rgba(0,0,0,.5); outline: 1px solid var(--accent); position: relative; z-index: 2; }
+  .grip { color: var(--muted); opacity: .45; text-align: center; cursor: grab; touch-action: none; font-size: 16px; line-height: 30px; }
+  .grip:hover, li.dragging .grip { opacity: 1; color: var(--text); }
+  body.reordering, body.reordering * { cursor: grabbing !important; user-select: none; }
   #list li.current .t { color: var(--accent); }
   #list li.note { display: block; color: var(--muted); cursor: default; padding: 16px 10px; }
   #list li.note:hover { background: none; }
@@ -173,7 +177,7 @@
     #bar, #waveHead { padding-left: 12px; padding-right: 12px; }
     .chips .lbl { width: 100%; }
     .pl { flex-basis: 76px; width: 76px; } .pl .cover { width: 76px; height: 76px; }
-    #list li { grid-template-columns: 1fr auto auto; } .num { display: none; }
+    #list li { grid-template-columns: 20px 1fr auto auto; gap: 8px; } .num { display: none; }
     footer { padding: 8px 12px 12px; }
   }
 </style>
@@ -295,6 +299,43 @@ async function removeTrack(id) {
   await txDone(t);
   tracks = tracks.filter(x => x.id !== id);
   if (id === currentId) stop();
+}
+
+/* ---------- порядок треков ---------- */
+/* Свой порядок хранится числом order у трека; у новых его нет, и они встают в конец. */
+const ord = t => t.order ?? 1e9 + t.id;
+const sortTracks = () => tracks.sort((a, b) => ord(a) - ord(b));
+async function renumberTracks() {                  // когда между соседями не осталось места для нового числа
+  const tx = db.transaction('tracks', 'readwrite');
+  tracks.forEach((t, i) => { if (t.order !== i) { t.order = i; tx.objectStore('tracks').put(t); } });
+  await txDone(tx);
+}
+async function moveTrack(t, before) {              // ставит трек перед before (или в конец, если before нет)
+  tracks = tracks.filter(x => x !== t);
+  const i = before ? tracks.indexOf(before) : tracks.length;
+  tracks.splice(i, 0, t);
+  const a = tracks[i - 1], b = tracks[i + 1];
+  const o = a && b ? (ord(a) + ord(b)) / 2 : a ? ord(a) + 1 : b ? ord(b) - 1 : 0;
+  if ((a && !(ord(a) < o)) || (b && !(o < ord(b)))) await renumberTracks();
+  else { t.order = o; await putMeta(t); }
+  settings.orderVer = Date.now(); saveSettings();
+  schedulePlSync();
+}
+async function pullOrder(ver) {                    // порядок, заданный на другом устройстве
+  const r = await api('GET', '/resources/download', { path: DATA + '/order.json' }, [404]);
+  if (r.status === 404) return;
+  const names = (await (await diskGet((await r.json()).href)).json()).names || [];
+  const pos = new Map(names.map((n, i) => [n, i]));
+  const tx = db.transaction('tracks', 'readwrite');
+  for (const t of tracks) {
+    const o = pos.get(t.name);
+    if (t.order === o) continue;
+    if (o === undefined) delete t.order; else t.order = o;
+    tx.objectStore('tracks').put(t);
+  }
+  await txDone(tx);
+  sortTracks();
+  settings.orderVer = ver; saveSettings();
 }
 
 /* ---------- добавление ---------- */
@@ -517,6 +558,12 @@ async function syncPlaylists() {
   const remote = await readRemotePlaylists() || {};
   const deleted = { ...(remote.deleted || {}) };
   let push = false, got = 0;
+  const rVer = remote.orderVer || 0, lVer = settings.orderVer || 0;   // порядок «Всех треков»: побеждает более свежий
+  if (rVer > lVer) await pullOrder(rVer);
+  else if (lVer > rVer) {
+    await uploadBlob(DATA + '/order.json', new Blob([JSON.stringify({ names: tracks.map(t => t.name) })], { type: 'application/json' }), true);
+    push = true;
+  }
   for (const [u, ts] of Object.entries(settings.plDeleted || {})) {
     if (!(deleted[u] >= ts)) { deleted[u] = ts; push = true; }
   }
@@ -549,7 +596,7 @@ async function syncPlaylists() {
     else if (!l.cover && l.coverVer && !coverUrls.has(l.id)) await fetchCover(l);
   }
   if (push) {
-    const body = { version: 1, deleted, playlists: playlists.map(({ uid, name, tracks, coverVer, created, updated }) =>
+    const body = { version: 1, orderVer: Math.max(rVer, lVer), deleted, playlists: playlists.map(({ uid, name, tracks, coverVer, created, updated }) =>
       ({ uid, name, tracks, coverVer, created, updated })) };
     await uploadBlob(DATA + '/playlists.json', new Blob([JSON.stringify(body)], { type: 'application/json' }), true);
   }
@@ -1032,6 +1079,7 @@ function render() {
   const list = $('#list');
   list.textContent = '';
   const frag = document.createDocumentFragment();
+  const canMove = !wave && !q;                       // в поиске и в волне порядок менять негде
   const ROWS = wave ? 300 : Infinity;               // в волне показываем начало подборки, играет она из всей
   view.slice(0, ROWS).forEach((t, i) => {
     const li = el('li', { className: t.id === currentId ? 'current' : '' });
@@ -1044,7 +1092,8 @@ function render() {
     if (!t.local) acts.append(el('button', { className: 'rb dl', textContent: '⬇', title: 'Скачать на это устройство, чтобы слушать без интернета' }));
     acts.append(el('button', { className: 'rb add', textContent: '＋', title: 'Добавить в плейлист' }));
     if (!wave) acts.append(el('button', { className: 'rb del', textContent: '✕', title: pl ? 'Убрать из плейлиста' : 'Удалить из плеера' }));
-    li.append(el('span', { className: 'num', textContent: i + 1 }),
+    li.append(canMove ? el('span', { className: 'grip', textContent: '⠿', title: 'Потяните, чтобы переставить' }) : el('span'),
+      el('span', { className: 'num', textContent: i + 1 }),
       el('div', { className: 'meta' }, el('div', { className: 't', textContent: t.title }),
         el('div', { className: 'a' }, t.artist || 'Неизвестный исполнитель', t.ai ? tagEl(t) : '')),
       dur, acts);
@@ -1258,6 +1307,7 @@ $('#list').onclick = async e => {
   if (!li) return;
   const id = +li.dataset.id, t = tracks.find(x => x.id === id);
   if (!t) return;
+  if (e.target.closest('.grip')) return;
   if (e.target.closest('.add')) return openPlMenu(t, e.target.closest('.add'));
   if (e.target.closest('.dl')) return enqueue(() => pullMany([t]));
   if (e.target.closest('.del')) {
@@ -1282,6 +1332,54 @@ $('#list').onclick = async e => {
   setContext(activePl);
   play(id);
 };
+
+/* перестановка треков: тянем за ручку слева — мышью или пальцем */
+let move = null;
+function moveStep() {
+  const main = $('main'), box = main.getBoundingClientRect();
+  const edge = move.y < box.top + 50 ? -1 : move.y > box.bottom - 50 ? 1 : 0;
+  if (edge) main.scrollTop += edge * 12;
+  const hit = document.elementFromPoint(move.x, Math.min(box.bottom - 4, Math.max(box.top + 4, move.y)));
+  const over = hit && hit.closest('#list li[data-id]');
+  if (!over || over === move.li) return;
+  const r = over.getBoundingClientRect();
+  $('#list').insertBefore(move.li, move.y < r.top + r.height / 2 ? over : over.nextSibling);
+}
+$('#list').addEventListener('pointerdown', e => {
+  const grip = e.target.closest('.grip');
+  if (!grip || move) return;
+  e.preventDefault();
+  const li = grip.closest('li');
+  move = { li, pid: e.pointerId, x: li.getBoundingClientRect().left + 60, y: e.clientY, start: li.nextSibling };
+  try { grip.setPointerCapture(e.pointerId); } catch {}
+  li.classList.add('dragging'); document.body.classList.add('reordering');
+  move.timer = setInterval(moveStep, 40);          // и двигает строку, и подкручивает список у краёв
+});
+$('#list').addEventListener('dragstart', e => e.preventDefault());   // иначе браузер начинает тянуть текст строки
+addEventListener('pointermove', e => { if (move && e.pointerId === move.pid) move.y = e.clientY; });
+async function moveEnd(e, cancel) {
+  if (!move || e.pointerId !== move.pid) return;
+  if (!cancel) { move.y = e.clientY; moveStep(); }   // учитываем точку, где отпустили
+  const m = move; move = null;
+  clearInterval(m.timer);
+  m.li.classList.remove('dragging'); document.body.classList.remove('reordering');
+  if (cancel) return render();
+  if (m.li.nextSibling === m.start) return;        // строка осталась на месте
+  const idOf = li => li && li.dataset.id ? +li.dataset.id : null;
+  const t = tracks.find(x => x.id === idOf(m.li)), pl = playlists.find(p => p.id === activePl);
+  if (!t) return render();
+  if (pl) {                                        // в плейлисте порядок — это порядок его списка
+    const shown = [...$('#list').children].map(idOf).filter(x => x != null).map(id => tracks.find(x => x.id === id).name);
+    pl.tracks = [...shown, ...pl.tracks.filter(n => !shown.includes(n))];
+    await touchPl(pl);
+  } else {
+    await moveTrack(t, tracks.find(x => x.id === idOf(m.li.nextElementSibling)));
+  }
+  bag = []; bagUsed = false;
+  render();
+}
+addEventListener('pointerup', e => moveEnd(e, false));
+addEventListener('pointercancel', e => moveEnd(e, true));
 
 let dragDepth = 0;
 const hasFiles = e => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
@@ -1338,6 +1436,7 @@ if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigat
   try {
     db = await openDB();
     tracks = await req(db.transaction('tracks').objectStore('tracks').getAll());
+    sortTracks();
     playlists = await req(db.transaction('playlists').objectStore('playlists').getAll());
   } catch (e) {
     setStatus('Браузер не дал доступ к хранилищу — треки не сохранятся. Откройте плеер в обычном (не приватном) окне.');
