@@ -449,6 +449,7 @@ function errText(e) {
   if (e.name === 'QuotaExceededError') return 'На устройстве не хватило места в хранилище браузера';
   if (e.status === 401) return 'Яндекс.Диск не принял токен — подключите Диск заново';
   if (e.status === 507) return 'На Яндекс.Диске закончилось место';
+  if (e.status === 404 && e.where) return 'На Яндекс.Диске не нашлось: ' + e.where;
   if (e instanceof TypeError) return 'Нет связи с Яндекс.Диском';
   return e.message || String(e);
 }
@@ -456,7 +457,9 @@ async function api(method, path, params, okAlso = []) {
   const r = await fetch(`${API}${path}?${new URLSearchParams(params || {})}`,
     { method, headers: { Authorization: 'OAuth ' + settings.token } });
   if (!r.ok && !okAlso.includes(r.status)) {
-    throw Object.assign(new Error('Яндекс.Диск ответил ошибкой ' + r.status), { status: r.status });
+    const where = params && params.path ? String(params.path).replace('disk:/', '') : '';
+    throw Object.assign(new Error(`Яндекс.Диск ответил ошибкой ${r.status} (${method} ${path || '/'}${where ? ': ' + where : ''})`),
+      { status: r.status, where });
   }
   return r;
 }
@@ -1248,7 +1251,13 @@ async function load(id, autoplay = true) {
   } else {
     if (!settings.token) { flash('Этот трек лежит на Яндекс.Диске — подключите Диск, чтобы его слушать'); return; }
     try { src = await downloadHref(t.name); }      // играем прямо с Диска, на устройство ничего не сохраняется
-    catch (e) { flash(errText(e), 8000); return; }
+    catch (e) {
+      if (e.status === 404) {                      // файл с Диска убрали, а список здесь ещё старый — сверяем его
+        flash(`Трека «${t.title}» больше нет на Яндекс.Диске — обновляю список`, 8000);
+        if (!jobs) enqueue(sync);
+      } else flash(errText(e), 8000);
+      return;
+    }
   }
   if (seq !== loadSeq) { if (isBlob) URL.revokeObjectURL(src); return; }
   if (objectUrl) URL.revokeObjectURL(objectUrl);
